@@ -1,0 +1,3 @@
+# Copy this to .dev.vars for local development (never commit .dev.vars)
+# Leave PROXY_TOKEN empty or unset to disable auth during local testing
+PROXY_TOKEN=your-token-here

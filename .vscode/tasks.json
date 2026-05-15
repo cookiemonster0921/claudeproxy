@@ -1,0 +1,36 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Start Worker",
+            "type": "shell",
+            "command": "npm run dev",
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "Deploy Worker",
+            "type": "shell",
+            "command": "npx wrangler deploy",
+            "problemMatcher": []
+        },
+        {
+            "label": "Test Health",
+            "type": "shell",
+            "command": "curl http://localhost:8787/health",
+            "problemMatcher": []
+        },
+        {
+            "label": "Claude Proxy Mode",
+            "type": "shell",
+            "command": "ANTHROPIC_BASE_URL=http://localhost:8787 ANTHROPIC_AUTH_TOKEN=dev-token CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1 claude",
+            "problemMatcher": []
+        },
+        {
+            "label": "Claude Normal Mode",
+            "type": "shell",
+            "command": "unset ANTHROPIC_BASE_URL && unset ANTHROPIC_AUTH_TOKEN && unset CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY && claude",
+            "problemMatcher": []
+        }
+    ]
+}

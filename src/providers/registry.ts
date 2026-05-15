@@ -1,0 +1,45 @@
+import type { Env } from '../types';
+import type { Settings } from '../config';
+import { ProxyError } from '../error';
+import type { BaseProvider, ProviderConfig } from './base';
+import { WorkersAiProvider } from './workers-ai';
+import { OpenAIChatProvider } from './openai-compat';
+
+const PROVIDER_BASE_URLS: Record<string, string> = {
+	nvidia_nim: 'https://integrate.api.nvidia.com/v1',
+	openrouter: 'https://openrouter.ai/api/v1',
+	deepseek: 'https://api.deepseek.com/v1',
+	lm_studio: 'http://localhost:1234/v1',
+	ollama: 'http://localhost:11434/v1',
+};
+
+function buildProviderConfig(providerId: string, settings: Settings, _env: Env): ProviderConfig {
+	const apiKeyMap: Record<string, string | undefined> = {
+		nvidia_nim: settings.nvidiaNimApiKey,
+		openrouter: settings.openrouterApiKey,
+		deepseek: settings.deepseekApiKey,
+		// lm_studio and ollama use no API key
+	};
+
+	const baseUrl = PROVIDER_BASE_URLS[providerId];
+	if (!baseUrl) {
+		throw new ProxyError(400, 'invalid_request_error', `Unsupported provider: "${providerId}"`);
+	}
+
+	return {
+		apiKey: apiKeyMap[providerId],
+		baseUrl,
+		readTimeoutMs: settings.readTimeoutMs,
+		logRawPayloads: settings.logRawPayloads,
+		logErrorTracebacks: settings.logErrorTracebacks,
+	};
+}
+
+export function createProvider(providerId: string, settings: Settings, env: Env): BaseProvider {
+	if (providerId === 'workers_ai') {
+		return new WorkersAiProvider(env.AI);
+	}
+
+	const config = buildProviderConfig(providerId, settings, env);
+	return new OpenAIChatProvider(config, providerId);
+}
