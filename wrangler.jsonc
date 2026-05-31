@@ -10,11 +10,20 @@
 	"observability": {
 		"enabled": true
 	},
-	"ai": { "binding": "AI" },
+	"ai": {
+		"binding": "AI"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "claude_proxy_analytics",
+			"database_id": "f55fa74c-a38d-4434-81b8-2ec05acd0e05"
+		}
+	],
 	"upload_source_maps": true,
 	"compatibility_flags": [
 		"nodejs_compat"
-	]
+	],
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
@@ -31,8 +40,36 @@
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
 	 * Note: Use secrets to store sensitive data.
 	 * https://developers.cloudflare.com/workers/configuration/secrets/
+	 *
+	 * Discord: paste DISCORD_PUBLIC_KEY and DISCORD_APPLICATION_ID from the Discord Developer Portal.
+	 * These are not secrets (no API key power) so they are safe as plaintext vars.
+	 * DISCORD_BOT_TOKEN is a secret — add it via: wrangler secret put DISCORD_BOT_TOKEN
+	 * Or set it in .dev.vars for local development only.
 	 */
-	// "vars": {  "MY_VARIABLE": "production_value" }
+	"durable_objects": {
+		"bindings": [
+			{ "name": "GOAL_AGENT", "class_name": "GoalAgent" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["GoalAgent"] }
+	],
+	"workflows": [
+		{
+			"name": "GoalWorkflow",
+			"class_name": "GoalWorkflow",
+			"binding": "GOAL_WORKFLOW"
+		}
+	],
+	"vars": {
+		"DISCORD_PUBLIC_KEY": "1542ba0eec179a0124e5cf41eff8bd8bad4f11854780d840fca3208b4b019402",
+		"DISCORD_APPLICATION_ID": "1507977592945250424",
+		"DISCORD_ALLOWED_GUILD_IDS": "",
+		"DISCORD_ADMIN_ROLE_IDS": "",
+		"DISCORD_STORE_MESSAGES": "true",
+		"DISCORD_ENABLE_ADMIN_COMMANDS": "true",
+		"DEFAULT_MODEL": "openrouter/anthropic/claude-sonnet-4-5"
+	}
 	/**
 	 * Static Assets
 	 * https://developers.cloudflare.com/workers/static-assets/binding/

@@ -1,0 +1,23 @@
+services:
+  claude-discord:
+    build:
+      context: .
+    image: claude-discord-chatgpt-version:local
+    container_name: claude-discord-chatgpt-version
+    env_file:
+      - ../.dev.vars
+    environment:
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-${MODEL:-}}
+      DISCORD_CHANNEL_IDS: ${DISCORD_CHANNEL_IDS:-}
+      DISCORD_USER_IDS: ${DISCORD_USER_IDS:-}
+      DISCORD_DM_POLICY: ${DISCORD_DM_POLICY:-}
+      DISCORD_REQUIRE_MENTION: ${DISCORD_REQUIRE_MENTION:-}
+    stdin_open: true
+    tty: true
+    volumes:
+      - claude-discord-state:/root/.claude
+      - ../:/workspace
+    restart: unless-stopped
+
+volumes:
+  claude-discord-state:

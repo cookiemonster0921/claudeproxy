@@ -42,6 +42,30 @@ export class SSEBuilder {
 		});
 	}
 
+	*openThinkingBlock(): Generator<string> {
+		yield this.frame('content_block_start', {
+			type: 'content_block_start',
+			index: this.blockIndex,
+			content_block: { type: 'thinking', thinking: '' },
+		});
+	}
+
+	*thinkingDelta(thinking: string): Generator<string> {
+		yield this.frame('content_block_delta', {
+			type: 'content_block_delta',
+			index: this.blockIndex,
+			delta: { type: 'thinking_delta', thinking },
+		});
+	}
+
+	*signatureDelta(signature: string): Generator<string> {
+		yield this.frame('content_block_delta', {
+			type: 'content_block_delta',
+			index: this.blockIndex,
+			delta: { type: 'signature_delta', signature },
+		});
+	}
+
 	*openToolBlock(id: string, name: string): Generator<string> {
 		yield this.frame('content_block_start', {
 			type: 'content_block_start',
@@ -63,11 +87,15 @@ export class SSEBuilder {
 		this.blockIndex++;
 	}
 
-	*messageStop(stopReason: 'end_turn' | 'tool_use', outputTokens: number): Generator<string> {
+	*messageStop(
+		stopReason: 'end_turn' | 'tool_use',
+		outputTokens: number,
+		usage?: Record<string, number>,
+	): Generator<string> {
 		yield this.frame('message_delta', {
 			type: 'message_delta',
 			delta: { stop_reason: stopReason, stop_sequence: null },
-			usage: { output_tokens: outputTokens },
+			usage: usage ?? { output_tokens: outputTokens },
 		});
 		yield this.frame('message_stop', { type: 'message_stop' });
 	}

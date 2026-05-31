@@ -26,6 +26,35 @@ export interface Env {
 	// Logging
 	LOG_RAW_API_PAYLOADS?: string;
 	LOG_API_ERROR_TRACEBACKS?: string;
+	// Cloudflare Workers AI REST API (external; distinct from env.AI binding)
+	CLOUDFLARE_API_TOKEN?: string;
+	CLOUDFLARE_ACCOUNT_ID?: string;
+	// Analytics (D1)
+	DB?: D1Database; // D1 binding — analytics disabled when absent
+	ANALYTICS_ENABLED?: string; // default true; set to 'false' to disable
+	IP_HASH_SECRET?: string; // HMAC secret for hashing client IPs before storage
+	// Google AI Studio / Gemini
+	GOOGLE_AI_API_KEY?: string;
+	GEMINI_BASE_URL?: string; // optional override; defaults to generativelanguage.googleapis.com/v1beta
+	GEMINI_TIMEOUT_MS?: string; // optional timeout in seconds; falls back to HTTP_READ_TIMEOUT
+	// Discord integration
+	DISCORD_PUBLIC_KEY?: string; // Ed25519 public key — from Discord Developer Portal (not secret)
+	DISCORD_APPLICATION_ID?: string; // Discord application/bot ID (not secret)
+	DISCORD_BOT_TOKEN?: string; // Bot token — only used in scripts/register-discord-commands.ts
+	DISCORD_ALLOWED_GUILD_IDS?: string; // comma-separated guild IDs; empty = all allowed
+	DISCORD_ADMIN_ROLE_IDS?: string; // comma-separated role IDs for admin commands; empty = all admins
+	DEFAULT_MODEL?: string; // Discord-specific default model (falls back to MODEL)
+	DISCORD_STORE_MESSAGES?: string; // 'true' = store full message content in D1; default 'false'
+	DISCORD_ENABLE_ADMIN_COMMANDS?: string; // 'false' to disable admin commands; default 'true'
+	// Cloud Run container
+	CLOUD_RUN_URL?: string; // Cloud Run container URL (e.g. https://claude-agent-xxxx-uc.a.run.app)
+	CONTAINER_SECRET?: string; // Auth secret for container's HTTP API
+	// Cloudflare Agents SDK bindings
+	GOAL_AGENT?: DurableObjectNamespace; // GoalAgent Durable Object namespace
+	GOAL_WORKFLOW?: Workflow; // GoalWorkflow binding
+	// External service keys (used by cloud agent tools)
+	VALTOWN_API_KEY?: string; // Val Town API key for cloud agent
+	GITHUB_TOKEN?: string; // Optional GitHub token for reading private repos
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +124,12 @@ export interface AnthropicAssistantResponse {
 	model: string;
 	stop_reason: 'end_turn' | 'tool_use';
 	stop_sequence: null;
-	usage: { input_tokens: number; output_tokens: number };
+	usage: {
+		input_tokens: number;
+		output_tokens: number;
+		cache_creation_input_tokens?: number;
+		cache_read_input_tokens?: number;
+	};
 }
 
 // ---------------------------------------------------------------------------

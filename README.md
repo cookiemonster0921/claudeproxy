@@ -41,6 +41,40 @@ To set a proxy auth token (optional, recommended for production):
 npx wrangler secret put PROXY_TOKEN
 ```
 
+## Run from any terminal — `cproxy`
+
+By default the proxy scripts only work from inside the project directory. Run `install.sh` once to register a global `cproxy` command so you can start the proxy (and Claude Code) from **any** terminal session:
+
+```bash
+# Install to ~/.local/bin  (no sudo required — recommended)
+./install.sh
+
+# Or install system-wide
+./install.sh --global
+
+# Uninstall
+./install.sh --remove
+```
+
+If `~/.local/bin` is not on your PATH yet, the installer will print the one line to add to your shell rc file (`~/.zshrc` or `~/.bashrc`):
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Once installed, `cproxy` works from any directory — Claude Code always opens in the folder you ran the command from:
+
+```bash
+cproxy on              # interactive provider + model picker
+cproxy on openrouter   # skip picker, use OpenRouter
+cproxy on nvidia       # skip picker, use NVIDIA NIM
+cproxy on workers_ai   # skip picker, use Workers AI binding
+cproxy off             # stop proxy, switch Claude Code to real Anthropic API
+cproxy log             # live coloured request log
+cproxy status          # show whether proxy is running
+cproxy stop            # stop the proxy without opening Claude Code
+```
+
 ## Configure Claude Code
 
 ```bash
@@ -55,7 +89,9 @@ When prompted to select a gateway model, choose one of the `claude-*` aliases ex
 
 ## Model mapping
 
-The proxy exposes Claude-compatible aliases for Claude Code discovery and keeps `cf-*` aliases for direct curl/testing. Each alias maps to a Workers AI model ID in `src/index.ts`:
+### Default fallback (Workers AI binding)
+
+The proxy exposes Claude-compatible aliases for Claude Code discovery. When no `MODEL` env var is set, requests fall back to the Workers AI binding (`env.AI`):
 
 | Alias | Workers AI model |
 |---|---|
@@ -65,7 +101,37 @@ The proxy exposes Claude-compatible aliases for Claude Code discovery and keeps 
 | `cf-qwen-coder` | `@cf/qwen/qwen2.5-coder-32b-instruct` |
 | `cf-llama` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
 
-To change or add models, edit `MODEL_MAP` in [`src/index.ts`](src/index.ts) and check the current catalog at [developers.cloudflare.com/workers-ai/models](https://developers.cloudflare.com/workers-ai/models/). Model availability changes over time.
+### External providers
+
+Set the `MODEL` env var (and optionally `MODEL_OPUS`, `MODEL_SONNET`, `MODEL_HAIKU`) to route to an external provider. Format: `provider_id/model-name`.
+
+| Provider ID | Format example | Credentials needed |
+|---|---|---|
+| `workers_ai` | *(default)* | `env.AI` binding |
+| `nvidia_nim` | `nvidia_nim/meta/llama-3.3-70b-instruct` | `NVIDIA_NIM_API_KEY` |
+| `openrouter` | `openrouter/meta-llama/llama-3.3-70b-instruct` | `OPENROUTER_API_KEY` |
+| `deepseek` | `deepseek/deepseek-chat` | `DEEPSEEK_API_KEY` |
+| `cloudflare_workers_ai` | `cloudflare_workers_ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` |
+
+<details>
+<summary><b>Cloudflare Workers AI REST API</b> (edge inference via external API)</summary>
+
+Uses the OpenAI-compatible endpoint at `https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1`. Different from the `workers_ai` binding — works from any environment, including deployed workers that need a specific account.
+
+```dotenv
+CLOUDFLARE_API_TOKEN="your-api-token"      # from dash.cloudflare.com/profile/api-tokens
+CLOUDFLARE_ACCOUNT_ID="your-account-id"    # from dash.cloudflare.com — right sidebar
+
+MODEL="cloudflare_workers_ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+MODEL_SONNET="cloudflare_workers_ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+MODEL_HAIKU="cloudflare_workers_ai/@cf/meta/llama-3.1-8b-instruct"
+```
+
+Available models: [developers.cloudflare.com/workers-ai/models](https://developers.cloudflare.com/workers-ai/models/)
+
+</details>
+
+To change or add Workers AI fallback models, edit `WORKERS_AI_MODEL_MAP` in [`src/model-router.ts`](src/model-router.ts).
 
 ## Auth
 
@@ -127,6 +193,92 @@ curl -N -X POST $BASE/v1/messages \
 ```bash
 npm run typecheck
 ```
+
+## Analytics (Cloudflare D1)
+
+The proxy logs metadata-only analytics (no prompts, no responses) to a Cloudflare D1 database.
+
+### Setup
+
+**1. Create the D1 database** (one-time):
+```bash
+npm run db:create
+```
+Copy the `database_id` from the output and paste it into `wrangler.jsonc`:
+```jsonc
+"d1_databases": [{ "binding": "DB", "database_name": "claude_proxy_analytics", "database_id": "YOUR-ID-HERE" }]
+```
+
+**2. Run the migration** to create the `request_logs` table:
+```bash
+npm run db:migrate:local   # local dev
+npm run db:migrate:remote  # deployed worker
+```
+
+If you already created analytics before token accounting was split out, also run:
+```bash
+npm run db:migrate5:local   # local dev
+npm run db:migrate5:remote  # deployed worker
+```
+
+**3. Set the IP hash secret** (recommended for production):
+```bash
+npx wrangler secret put IP_HASH_SECRET
+# Enter any random string — used to HMAC-hash client IPs before storage
+```
+
+### Viewing analytics
+
+```bash
+# Dashboard (browser)
+open http://localhost:8787/dashboard
+
+# JSON summary
+curl http://localhost:8787/analytics/summary | jq .
+
+# Recent requests (newest first, max 200)
+curl "http://localhost:8787/analytics/recent?limit=20" | jq .
+
+# Run smoke tests
+./scripts/test-analytics.sh
+
+# Query D1 directly
+npx wrangler d1 execute claude_proxy_analytics --local \
+  --command "SELECT provider, COUNT(*) n, SUM(estimated_cost_usd) cost FROM request_logs GROUP BY provider;"
+```
+
+### What is stored
+
+| Field | Example | Notes |
+|---|---|---|
+| `id` | `abc123` | Request UUID |
+| `timestamp` | `2026-05-18T…` | ISO8601 UTC |
+| `method` / `path` | `POST /v1/messages` | Endpoint only |
+| `model` | `claude-sonnet-4-6` | Requested model name |
+| `provider` | `openrouter` | Resolved provider |
+| `stream` | `1` | Boolean |
+| `status_code` | `200` | HTTP status |
+| `duration_ms` | `1547` | Response time |
+| `estimated_context_tokens` | `55000` | Full context estimate seen by the proxy |
+| `estimated_prompt_tokens` | `87` | User-visible prompt estimate |
+| `estimated_tool_result_tokens` | `1200` | Tool-result content estimate |
+| `billable_input_tokens` / `billable_output_tokens` | `87 / 42` | Provider-reported usage when available |
+| `cached_input_tokens` | `4000` | Provider-reported cache usage when available |
+| `failed_request_tokens` | `55000` | Failed/rate-limited context estimate, not billable |
+| `request_kind` | `normal` | `normal`, `tool_result`, `skill_result`, `rate_limited`, or `failed` |
+| `estimated_cost_usd` | `0.000045` | Estimate from billable tokens only |
+| `user_agent` | `Claude-Code/…` | Client UA |
+| `client_ip_hash` | `a3f8b2…` | HMAC-SHA256, 16 chars |
+
+**What is NEVER stored:** raw prompts, messages, model responses, tool inputs/outputs, API keys, or auth headers.
+
+### Token accounting notes
+
+Claude Code's task UI and the proxy dashboard can differ. Claude Code may show summarized per-agent token usage, while the proxy sees the full request context sent over HTTP, tool-result continuation requests such as `[Result: ...]`, skill launch messages, and retry/rate-limit attempts. The dashboard separates **billable tokens** from **estimated context processed** so repeated context estimates do not inflate spend.
+
+### Disable analytics
+
+Set `ANALYTICS_ENABLED=false` in `.dev.vars` or as a wrangler secret.
 
 ## Known limitations
 

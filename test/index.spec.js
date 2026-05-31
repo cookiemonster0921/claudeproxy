@@ -32,8 +32,18 @@ describe("claude-code-cf-proxy", () => {
 		const body = await response.json();
 		expect(body.object).toBe("list");
 		expect(body.data.length).toBeGreaterThan(0);
-		expect(body.data.map((m) => m.id)).toContain("claude-sonnet-4-6");
-		expect(body.data.every((m) => m.id.startsWith("claude") || m.id.startsWith("anthropic"))).toBe(true);
+		// Workers AI models always present (no key required)
+		expect(body.data.map((m) => m.id)).toContain("cf-llama");
+		// All IDs must match one of the known provider prefixes / short-name patterns
+		expect(body.data.every((m) =>
+			m.id.startsWith("cf-") ||          // Workers AI short names
+			m.id.startsWith("gemini-") ||      // Google AI short names (GEMINI_MODEL_ALIASES)
+			m.id.startsWith("openrouter/") ||  // OpenRouter qualified IDs
+			m.id.startsWith("nvidia_nim/")     // NVIDIA NIM qualified IDs
+		)).toBe(true);
+		// Models include display_name and owned_by fields
+		expect(body.data[0].display_name).toBeTruthy();
+		expect(body.data[0].owned_by).toBeTruthy();
 	});
 
 	it("POST /v1/messages/count_tokens returns token estimate", async () => {

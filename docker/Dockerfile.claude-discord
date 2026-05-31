@@ -1,0 +1,83 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Dockerfile.claude-discord — Self-contained Claude Code session with the
+#                             Discord plugin baked in.
+#
+# Each container = one persistent Claude Code session for one Discord channel.
+# The Discord plugin runs as the MCP server — no separate HTTP endpoint needed.
+# Communication is entirely through Discord itself.
+#
+# Build (run from repo root):
+#   docker build -f docker/Dockerfile.claude-discord -t claude-discord .
+#
+# Run locally (one container = one Discord channel):
+#   docker run -d --name claude-session-mychannel \
+#     -e DISCORD_BOT_TOKEN="..." \
+#     -e DISCORD_ALLOWED_CHANNEL="1234567890" \
+#     -e DISCORD_ALLOWED_USERS="111222333,444555666" \
+#     -e WORKER_URL="https://claude-proxy.YOUR-ACCOUNT.workers.dev" \
+#     -e PROXY_TOKEN="your-secret" \
+#     claude-discord
+#
+# Stop a session:
+#   docker stop claude-session-mychannel && docker rm claude-session-mychannel
+#
+# Or use the helper script to manage sessions on Cloud Run:
+#   ./scripts/spawn-discord-session.sh --channel-id 1234567890 --project my-gcp-project
+# ──────────────────────────────────────────────────────────────────────────────
+
+FROM debian:bookworm-slim
+
+# ── System dependencies ───────────────────────────────────────────────────────
+# unzip is needed by the bun installer
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+        bash \
+        git \
+        unzip \
+        python3 && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Install bun ───────────────────────────────────────────────────────────────
+# The Discord plugin (server.ts) is TypeScript — bun runs it directly with
+# no compile step. bun also handles the discord.js and MCP SDK dependencies.
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:$PATH"
+
+# ── Install Claude Code via official installer ────────────────────────────────
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/root/.local/bin:$PATH"
+
+# ── Suppress telemetry and auto-updates ──────────────────────────────────────
+ENV CLAUDE_CODE_SKIP_TELEMETRY=1
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+# ── Copy Discord plugin ───────────────────────────────────────────────────────
+# docker/discord-plugin/server.ts  — the MCP server (customised plugin code)
+# docker/discord-plugin/package.json — discord.js + MCP SDK dependencies
+#
+# To update the plugin after edits, run:
+#   ./scripts/sync-discord-plugin.sh
+# then rebuild the image.
+COPY docker/discord-plugin /app/plugin
+
+# ── Pre-install plugin dependencies ──────────────────────────────────────────
+# Bake node_modules into the image so container startup is instant.
+# The plugin only needs discord.js and @modelcontextprotocol/sdk.
+RUN cd /app/plugin && bun install --no-summary
+
+# ── Theme auto-selector ───────────────────────────────────────────────────────
+# discord-autotheme.py wraps claude in a PTY, watches for the first-run theme
+# picker prompt, injects "2\r" (Dark mode) automatically, then relays I/O
+# transparently for the rest of the session. This allows headless startup.
+COPY docker/discord-autotheme.py /usr/local/bin/discord-autotheme.py
+RUN chmod +x /usr/local/bin/discord-autotheme.py
+
+# ── Entrypoint ────────────────────────────────────────────────────────────────
+COPY docker/discord-entrypoint.sh /usr/local/bin/discord-entrypoint.sh
+RUN chmod +x /usr/local/bin/discord-entrypoint.sh
+
+WORKDIR /workspace
+
+ENTRYPOINT ["/usr/local/bin/discord-entrypoint.sh"]

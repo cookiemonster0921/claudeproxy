@@ -7,7 +7,26 @@
     "dev": "wrangler dev",
     "start": "wrangler dev",
     "test": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:create": "wrangler d1 create claude_proxy_analytics",
+    "db:migrate:local": "wrangler d1 execute claude_proxy_analytics --local --file=migrations/0001_create_analytics.sql",
+    "db:migrate:remote": "wrangler d1 execute claude_proxy_analytics --remote --file=migrations/0001_create_analytics.sql",
+    "db:migrate2:local": "wrangler d1 execute claude_proxy_analytics --local --file=migrations/0002_add_snapshots.sql",
+    "db:migrate2:remote": "wrangler d1 execute claude_proxy_analytics --remote --file=migrations/0002_add_snapshots.sql",
+    "db:migrate3:local": "wrangler d1 execute claude_proxy_analytics --local --file=migrations/0003_discord.sql",
+    "db:migrate3:remote": "wrangler d1 execute claude_proxy_analytics --remote --file=migrations/0003_discord.sql",
+    "db:migrate4:local": "wrangler d1 execute claude_proxy_analytics --local --file=migrations/0004_discord_v2.sql",
+    "db:migrate4:remote": "wrangler d1 execute claude_proxy_analytics --remote --file=migrations/0004_discord_v2.sql",
+    "db:migrate5:local": "wrangler d1 execute claude_proxy_analytics --local --file=migrations/0005_token_accounting.sql",
+    "db:migrate5:remote": "wrangler d1 execute claude_proxy_analytics --remote --file=migrations/0005_token_accounting.sql",
+    "db:migrate6:local": "wrangler d1 execute claude_proxy_analytics --local --file=migrations/0006_cloud_sessions.sql",
+    "db:migrate6:remote": "wrangler d1 execute claude_proxy_analytics --remote --file=migrations/0006_cloud_sessions.sql",
+    "db:migrate7:local": "wrangler d1 execute claude_proxy_analytics --local --file=migrations/0007_nullable_content.sql",
+    "db:migrate7:remote": "wrangler d1 execute claude_proxy_analytics --remote --file=migrations/0007_nullable_content.sql",
+    "db:migrate:all:local": "bash discord-dev.sh migrate",
+    "db:migrate:all:remote": "for f in migrations/*.sql; do npx wrangler d1 execute claude_proxy_analytics --remote --file=$f 2>&1 | grep -v '^$' || true; done",
+    "discord:dev": "bash discord-dev.sh",
+    "discord:register": "npx tsx scripts/register-discord-commands.mts"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.4",
@@ -15,5 +34,8 @@
     "typescript": "^6.0.3",
     "vitest": "~3.2.0",
     "wrangler": "^4.88.0"
+  },
+  "dependencies": {
+    "agents": "^0.13.3"
   }
 }

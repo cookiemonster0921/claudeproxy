@@ -17,7 +17,11 @@ interface OpenAIStreamChunk {
 		};
 		finish_reason?: string | null;
 	}>;
-	usage?: { completion_tokens?: number };
+	usage?: {
+		prompt_tokens?: number;
+		completion_tokens?: number;
+		prompt_tokens_details?: { cached_tokens?: number };
+	};
 }
 
 interface BufferedToolCall {
@@ -67,7 +71,7 @@ export class OpenAIChatProvider implements BaseProvider {
 				'Content-Type': 'application/json',
 				...(EXTRA_HEADERS[this.providerId] ?? {}),
 			},
-			body: JSON.stringify({ ...openAiBody, stream: true }),
+			body: JSON.stringify({ ...openAiBody, stream: true, stream_options: { include_usage: true } }),
 			signal: AbortSignal.timeout(this.config.readTimeoutMs),
 		});
 
@@ -171,7 +175,19 @@ export class OpenAIChatProvider implements BaseProvider {
 			outputTokens = lastChunk.usage.completion_tokens;
 		}
 
-		yield* builder.messageStop(stopReason, outputTokens);
+		yield* builder.messageStop(
+			stopReason,
+			outputTokens,
+			lastChunk?.usage
+				? {
+						...(lastChunk.usage.prompt_tokens !== undefined ? { input_tokens: lastChunk.usage.prompt_tokens } : {}),
+						output_tokens: outputTokens,
+						...(lastChunk.usage.prompt_tokens_details?.cached_tokens !== undefined
+							? { cache_read_input_tokens: lastChunk.usage.prompt_tokens_details.cached_tokens }
+							: {}),
+					}
+				: undefined,
+		);
 	}
 
 	async cleanup(): Promise<void> {

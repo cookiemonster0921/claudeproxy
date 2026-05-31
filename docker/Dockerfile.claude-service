@@ -1,0 +1,69 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Dockerfile.claude-service — Cloud Run Service image.
+#
+# Wraps `claude --print` behind a minimal HTTP server so Cloud Run can
+# route requests to it. This is NOT an interactive session — it is a
+# stateless request/response API:
+#
+#   GET  /health          → readiness probe (Cloud Run calls this)
+#   POST /run             → run one claude --print turn, return output
+#   POST /run  stream=true → same, streamed as Server-Sent Events
+#
+# Build (run from repo root):
+#   docker build -f docker/Dockerfile.claude-service -t claude-service .
+#
+# Run locally for testing (listens on 8080):
+#   docker run --rm -p 8080:8080 \
+#     -e WORKER_URL="https://claude-proxy.YOUR-ACCOUNT.workers.dev" \
+#     -e PROXY_TOKEN="your-token" \
+#     claude-service
+#
+# Then in another terminal:
+#   curl http://localhost:8080/health
+#   curl -X POST http://localhost:8080/run \
+#     -H 'Content-Type: application/json' \
+#     -d '{"prompt": "say hi in one sentence"}'
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Base image ───────────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+# ── System dependencies ──────────────────────────────────────────────────────
+# python3   runs service-server.py (stdlib only — no pip install needed)
+# curl      fetches the Claude Code installer
+# git       Claude Code reads repo context
+# ca-certs  HTTPS to Anthropic API / Worker
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python3 \
+        curl \
+        ca-certificates \
+        git && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Install Claude Code via official installer (no npm) ───────────────────────
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/root/.local/bin:$PATH"
+
+# ── Suppress telemetry and auto-updates ──────────────────────────────────────
+ENV CLAUDE_CODE_SKIP_TELEMETRY=1
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+# ── Copy server ───────────────────────────────────────────────────────────────
+# service-server.py handles its own WORKER_URL validation and sets
+# ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN before spawning claude subprocesses.
+# docker-entrypoint.sh is not used here — it would exec claude and exit
+# before the HTTP server ever started.
+COPY service-server.py /app/service-server.py
+
+# ── Working directory ─────────────────────────────────────────────────────────
+WORKDIR /workspace
+
+# ── Port ─────────────────────────────────────────────────────────────────────
+# Cloud Run injects the actual port via $PORT at runtime. 8080 is the default.
+EXPOSE 8080
+
+# ── Entrypoint ────────────────────────────────────────────────────────────────
+# Starts the HTTP server. WORKER_URL and PROXY_TOKEN are injected via
+# `docker run -e` or Cloud Run env var configuration.
+ENTRYPOINT ["python3", "/app/service-server.py"]

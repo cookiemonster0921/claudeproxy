@@ -1,0 +1,17 @@
+{
+  "name": "claude-channel-discord",
+  "version": "0.0.1",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": "./server.ts",
+  "scripts": {
+    "test": "npm run test:permission-buttons",
+    "start": "bun install --no-summary && bun server.ts",
+    "test:permission-buttons": "bun tests/permission-buttons-harness.ts --server server.ts",
+    "test:permission-buttons:bare": "bun tests/permission-buttons-harness.ts --server serve.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "discord.js": "^14.14.0"
+  }
+}

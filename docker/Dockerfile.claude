@@ -1,0 +1,77 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Dockerfile.claude — Interactive Claude Code session routed through the
+#                     deployed claude-proxy Cloudflare Worker (prod mode).
+#
+# Equivalent to running: cproxy on prod
+#
+# Build (run from repo root):
+#   docker build -f docker/Dockerfile.claude -t claude-interactive .
+#
+# Run (always pass -it — Claude Code needs a real TTY):
+#   docker run -it --rm \
+#     -e WORKER_URL="https://claude-proxy.YOUR-ACCOUNT.workers.dev" \
+#     -e PROXY_TOKEN="your-secret-token" \
+#     claude-interactive
+#
+# Mount a local project so Claude can read/edit real files:
+#   docker run -it --rm \
+#     -e WORKER_URL="https://claude-proxy.YOUR-ACCOUNT.workers.dev" \
+#     -e PROXY_TOKEN="your-secret-token" \
+#     -v "$(pwd)":/workspace \
+#     claude-interactive
+#
+# Pass extra claude flags after the image name, e.g. --model claude-sonnet-4-6
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Base image ───────────────────────────────────────────────────────────────
+# Debian bookworm-slim: minimal footprint, glibc compatibility for the
+# official claude.ai installer binary, and a real bash shell.
+FROM debian:bookworm-slim
+
+# ── System dependencies ──────────────────────────────────────────────────────
+# curl + ca-certificates  fetch the install script over HTTPS
+# bash                    the install script requires bash (not sh)
+# git                     Claude Code reads repo context (branch, diff, log)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+        bash \
+        git && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Install Claude Code via the official installer (no npm) ───────────────────
+# https://claude.ai/install.sh detects the platform, downloads the correct
+# binary, and places it in ~/.local/bin (i.e. /root/.local/bin as root).
+RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# ── Expose the installer's bin directory on PATH ─────────────────────────────
+# Subsequent RUN layers and the entrypoint both need to find `claude` here.
+ENV PATH="/root/.local/bin:$PATH"
+
+# ── Suppress telemetry and in-container auto-updates ─────────────────────────
+# SKIP_TELEMETRY                   don't send usage metrics to Anthropic
+# DISABLE_NONESSENTIAL_TRAFFIC     stop the auto-updater from running inside
+#                                  a sealed image (it would fail or corrupt state)
+ENV CLAUDE_CODE_SKIP_TELEMETRY=1
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+# ── Entrypoint script ─────────────────────────────────────────────────────────
+# docker-entrypoint.sh mirrors `cproxy on prod`:
+#   - validates WORKER_URL is set
+#   - sets ANTHROPIC_BASE_URL so all API calls go to the Worker
+#   - sets ANTHROPIC_AUTH_TOKEN for Worker auth
+#   - unsets Vertex/Bedrock/AWS vars to prevent proxy bypass
+#   - exec's `claude` so it becomes PID 1 (clean signal handling)
+COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# ── Working directory ─────────────────────────────────────────────────────────
+# /workspace is the conventional mount point for the user's project.
+# Claude Code will use this as the project root.
+WORKDIR /workspace
+
+# ── Entrypoint ────────────────────────────────────────────────────────────────
+# WORKER_URL and PROXY_TOKEN are injected at `docker run` time via -e flags.
+# Any arguments after the image name are forwarded to `claude` directly.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

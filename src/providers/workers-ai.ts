@@ -151,6 +151,56 @@ function normalizeAiResult(raw: WorkersAiResponse | WorkersAiToolCall | string):
 const WORKERS_AI_TIMEOUT_MS = 30_000;
 const STREAM_CHUNK_SIZE = 20;
 
+// Context window limits per model. Workers AI includes both input AND max_tokens
+// in this budget. Claude Code ships 30+ tool schemas per request (~60-70k tokens),
+// so we strip tools pre-emptively when the estimate would overflow.
+const WORKERS_AI_CONTEXT_WINDOWS: Record<string, number> = {
+	'@cf/meta/llama-3.3-70b-instruct-fp8-fast': 24_000,
+	'@cf/meta/llama-3.1-8b-instruct': 8_192,
+	'@cf/qwen/qwen2.5-coder-32b-instruct': 32_768,
+};
+const WORKERS_AI_DEFAULT_CONTEXT = 24_000;
+// Keep at least this many tokens free for the model's output.
+const WORKERS_AI_MIN_OUTPUT_BUDGET = 512;
+
+function fitRequestToContext(
+	aiRequest: WorkersAiRequest,
+	messageTokens: number,
+	providerModel: string,
+	requestId: string,
+): void {
+	const contextWindow = WORKERS_AI_CONTEXT_WINDOWS[providerModel] ?? WORKERS_AI_DEFAULT_CONTEXT;
+	const toolTokens = aiRequest.tools ? Math.ceil(JSON.stringify(aiRequest.tools).length / 4) : 0;
+	const currentMax = aiRequest.max_tokens ?? 512;
+
+	// Step 1: cap max_tokens so input + output ≤ context window.
+	const maxAfterMessages = contextWindow - messageTokens - toolTokens - 1;
+	if (maxAfterMessages < currentMax) {
+		const capped = Math.max(WORKERS_AI_MIN_OUTPUT_BUDGET, maxAfterMessages);
+		console.warn(
+			`[${requestId}] capping max_tokens ${currentMax}→${capped} (context ${contextWindow}, ~${messageTokens + toolTokens} input tokens)`,
+		);
+		aiRequest.max_tokens = capped;
+	}
+
+	// Step 2: if tool definitions alone push us over the limit, drop them.
+	// Workers AI llama models have a 24k window; Claude Code's 30+ tool schemas
+	// typically occupy 60-70k tokens — they can never fit.
+	if (toolTokens > 0 && messageTokens + toolTokens + (aiRequest.max_tokens ?? 512) > contextWindow) {
+		console.warn(
+			`[${requestId}] stripping ${aiRequest.tools?.length ?? 0} tools (~${toolTokens} tok): ` +
+				`estimated input ${messageTokens + toolTokens} exceeds ${contextWindow} context window`,
+		);
+		delete aiRequest.tools;
+		// Re-apply max_tokens cap without tool overhead.
+		const maxWithoutTools = contextWindow - messageTokens - 1;
+		aiRequest.max_tokens = Math.min(
+			aiRequest.max_tokens ?? 512,
+			Math.max(WORKERS_AI_MIN_OUTPUT_BUDGET, maxWithoutTools),
+		);
+	}
+}
+
 export class WorkersAiProvider implements BaseProvider {
 	constructor(private readonly ai: Ai) {}
 
@@ -162,6 +212,7 @@ export class WorkersAiProvider implements BaseProvider {
 		const { body, resolved } = routed;
 		const messages = convertMessages(body.messages, body.system);
 		const aiRequest = buildAiRequest(body, messages);
+		fitRequestToContext(aiRequest, inputTokens, resolved.providerModel, requestId);
 		const messageId = `msg_${crypto.randomUUID().replace(/-/g, '')}`;
 		const builder = new SSEBuilder(messageId, body.model, inputTokens);
 
@@ -182,7 +233,8 @@ export class WorkersAiProvider implements BaseProvider {
 			return;
 		}
 
-		const message = buildAnthropicMessage(normalizeAiResult(rawResult), body.model, inputTokens);
+		const normalizedResult = normalizeAiResult(rawResult);
+		const message = buildAnthropicMessage(normalizedResult, body.model, inputTokens);
 
 		for (const block of message.content) {
 			if (block.type === 'text') {
@@ -198,7 +250,16 @@ export class WorkersAiProvider implements BaseProvider {
 			}
 		}
 
-		yield* builder.messageStop(message.stop_reason, message.usage.output_tokens);
+		yield* builder.messageStop(
+			message.stop_reason,
+			message.usage.output_tokens,
+			normalizedResult.usage
+				? {
+						input_tokens: message.usage.input_tokens,
+						output_tokens: message.usage.output_tokens,
+					}
+				: undefined,
+		);
 	}
 
 	async cleanup(): Promise<void> {
