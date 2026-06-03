@@ -26,7 +26,9 @@
     "db:migrate:all:local": "bash discord-dev.sh migrate",
     "db:migrate:all:remote": "for f in migrations/*.sql; do npx wrangler d1 execute claude_proxy_analytics --remote --file=$f 2>&1 | grep -v '^$' || true; done",
     "discord:dev": "bash discord-dev.sh",
-    "discord:register": "npx tsx scripts/register-discord-commands.mts"
+    "discord:ops:dev": "bash ops-discord-dev.sh",
+    "discord:register": "npx tsx scripts/register-discord-commands.mts",
+    "discord:deregister": "npx tsx scripts/deregister-discord-commands.mts"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.12.4",

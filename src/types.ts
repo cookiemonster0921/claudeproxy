@@ -41,6 +41,7 @@ export interface Env {
 	DISCORD_PUBLIC_KEY?: string; // Ed25519 public key — from Discord Developer Portal (not secret)
 	DISCORD_APPLICATION_ID?: string; // Discord application/bot ID (not secret)
 	DISCORD_BOT_TOKEN?: string; // Bot token — only used in scripts/register-discord-commands.ts
+	OPS_BOT_PUBLIC_KEY?: string; // Ed25519 public key for the operations bot
 	DISCORD_ALLOWED_GUILD_IDS?: string; // comma-separated guild IDs; empty = all allowed
 	DISCORD_ADMIN_ROLE_IDS?: string; // comma-separated role IDs for admin commands; empty = all admins
 	DEFAULT_MODEL?: string; // Discord-specific default model (falls back to MODEL)

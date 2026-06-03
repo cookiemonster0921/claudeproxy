@@ -10,6 +10,7 @@ import type { AnalyticsContext } from './analytics';
 import { logAnalytics, hashClientIp, estimateCostUsd, querySummary } from './analytics';
 import { getDashboardHtml } from './dashboard';
 import { handleDiscordInteraction } from './discord/interactions';
+import { handleOpsDiscordInteraction } from './discord/opsInteractions';
 import { classifyRequest, hasRetryHeader } from './token-accounting';
 import { routeAgentRequest } from 'agents';
 
@@ -395,7 +396,9 @@ export default {
 			} else if (method === 'POST' && pathname === '/cloud-sessions') {
 				if (!env.DB) response = jsonError(503, 'api_error', 'D1 not configured', requestId);
 				else response = await handleUpsertCloudSession(env.DB, request, requestId);
-			} else if (method === 'POST' && pathname === '/discord/interactions') {
+				} else if (method === 'POST' && pathname === '/discord/ops/interactions') {
+					response = await handleOpsDiscordInteraction(request, env);
+				} else if (method === 'POST' && pathname === '/discord/interactions') {
 				if (!env.DISCORD_PUBLIC_KEY) {
 					response = jsonError(503, 'api_error', 'Discord not configured. Set DISCORD_PUBLIC_KEY in wrangler.jsonc vars or .dev.vars.', requestId);
 				} else if (!env.DB) {

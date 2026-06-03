@@ -1,8 +1,9 @@
 /**
- * Register the Discord slash commands for the operations bot.
- * Run once (or whenever commands change):
- *   npx tsx scripts/register-discord-commands.mts
- * Or: npm run discord:register
+ * Deregister all global Discord slash commands for the operations bot.
+ * Run:
+ *   npx tsx scripts/deregister-discord-commands.mts
+ * Or:
+ *   npm run discord:deregister
  *
  * Reads OPS_BOT_TOKEN and OPS_BOT_APPLICATION_ID from .dev.vars
  * (then environment variables as fallback).
@@ -40,35 +41,7 @@ if (!APPLICATION_ID || !BOT_TOKEN) {
 	process.exit(1);
 }
 
-const commands = [
-	{
-		name: 'cloudshell',
-		description: 'Launch a temporary Claude Code Discord session in Google Cloud Shell',
-	},
-	{
-		name: 'computeengine',
-		description: 'Launch a persistent Claude Code Discord session on Google Compute Engine',
-	},
-	{
-		name: 'cloudrunjobs',
-		description: 'Launch an experimental time-limited Claude Code Discord session as a Cloud Run Job',
-	},
-	{
-		name: 'local',
-		description: 'Launch a Claude Code Discord session on a configured local runtime',
-	},
-	{
-		name: 'help',
-		description: 'Show the operations bot help panel',
-	},
-].map((command) => ({
-	...command,
-	type: 1,
-	integration_types: [0],
-	contexts: [0],
-}));
-
-console.log(`Registering ${commands.length} commands for application ${APPLICATION_ID}...`);
+console.log(`Deregistering all global commands for application ${APPLICATION_ID}...`);
 
 const res = await fetch(
 	`https://discord.com/api/v10/applications/${APPLICATION_ID}/commands`,
@@ -78,16 +51,15 @@ const res = await fetch(
 			Authorization: `Bot ${BOT_TOKEN}`,
 			'Content-Type': 'application/json',
 		},
-		body: JSON.stringify(commands),
+		body: JSON.stringify([]),
 	},
 );
 
 const data = await res.json();
 if (res.ok) {
-	console.log(`✅ Registered ${(data as unknown[]).length} command(s) successfully.`);
-	console.log('Commands:', (data as Array<{ name: string }>).map((c) => `/${c.name}`).join(', '));
+	console.log(`Deregistered all global commands. Discord returned ${(data as unknown[]).length} command(s).`);
 } else {
-	console.error('❌ Failed to register commands:');
+	console.error('Failed to deregister commands:');
 	console.error(JSON.stringify(data, null, 2));
 	process.exit(1);
 }

@@ -87,20 +87,28 @@ session_name() {
     echo "discord-session-${1:-unknown}"
 }
 
-# ── Sync plugin source into build context ─────────────────────────────────────
+# ── Sync plugin into local cache and Docker build context ─────────────────────
+# docker/discord-plugin/server.ts is the single source of truth.
+# Before every build we push it into the local Claude plugin cache so
+# cproxy sessions and container images always run the same code.
 sync_plugin() {
-    local plugin_src="$HOME/.claude/plugins/cache/claude-plugins-official/discord/0.0.4/server.ts"
-    local plugin_dst="$REPO_ROOT/docker/discord-plugin/server.ts"
+    local plugin_src="$REPO_ROOT/docker/discord-plugin/server.ts"
+    local plugin_dst="$HOME/.claude/plugins/cache/claude-plugins-official/discord/0.0.4/server.ts"
 
-    if [[ -f "$plugin_src" ]]; then
+    if [[ ! -f "$plugin_src" ]]; then
+        die "Plugin source not found: $plugin_src"
+    fi
+
+    # Push to local cache (used by cproxy local sessions)
+    if [[ -d "$(dirname "$plugin_dst")" ]]; then
         if ! cmp -s "$plugin_src" "$plugin_dst" 2>/dev/null; then
-            info "Syncing updated plugin → docker/discord-plugin/server.ts"
+            info "Syncing plugin → local cache"
             cp "$plugin_src" "$plugin_dst"
         else
-            info "Plugin source is up to date."
+            info "Plugin cache is up to date."
         fi
     else
-        warn "Plugin source not found at $plugin_src — using existing docker/discord-plugin/server.ts"
+        warn "Local plugin cache not found — skipping cache sync (Docker image will still be correct)"
     fi
 }
 

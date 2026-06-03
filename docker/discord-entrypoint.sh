@@ -127,6 +127,16 @@ cat > /root/.claude/settings.json << 'SETTINGS_EOF'
   "theme": "dark",
   "enabledPlugins": {
     "discord@claude-plugins-official": true
+  },
+  "permissions": {
+    "allow": [
+      "mcp__plugin_discord_discord__reply",
+      "mcp__plugin_discord_discord__react",
+      "mcp__plugin_discord_discord__edit_message",
+      "mcp__plugin_discord_discord__fetch_messages",
+      "mcp__plugin_discord_discord__download_attachment",
+      "mcp__plugin_discord_discord__ask"
+    ]
   }
 }
 SETTINGS_EOF

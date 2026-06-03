@@ -560,7 +560,25 @@ on)
 	done
 	CLAUDE_ARGS=("${_CPROXY_FILTERED[@]+"${_CPROXY_FILTERED[@]}"}")
 
+	# ── Discord plugin sync ───────────────────────────────────────────────────────
+	# docker/discord-plugin/server.ts is the single source of truth.
+	# When the Discord plugin is in use, push it to the local Claude plugin cache
+	# before launch so the running plugin matches what would be in a Docker image.
+	_discord_in_args=false
+	for _a in "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"; do
+		[[ "$_a" == *"plugin:discord"* ]] && _discord_in_args=true && break
+	done
+	if [[ "$_discord_in_args" == true ]]; then
+		"$SCRIPT_DIR/scripts/sync-discord-plugin.sh" 2>/dev/null || true
+	fi
+
 	if [[ -n "$DISCORD_CHANNEL_IDS" || -n "$DISCORD_USER_IDS" || -n "$DISCORD_DM_POLICY" ]]; then
+		# Validate: --discord-channel must be a single ID (no commas)
+		if [[ "$DISCORD_CHANNEL_IDS" == *,* ]]; then
+			echo "  ERROR: --discord-channel takes a single channel ID, not a list." >&2
+			echo "         Each Claude Code instance is tied to exactly one channel." >&2
+			exit 1
+		fi
 		# Validate DM policy value if provided
 		if [[ -n "$DISCORD_DM_POLICY" ]]; then
 			case "$DISCORD_DM_POLICY" in
