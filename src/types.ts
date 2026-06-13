@@ -53,6 +53,8 @@ export interface Env {
 	// Cloudflare Agents SDK bindings
 	GOAL_AGENT?: DurableObjectNamespace; // GoalAgent Durable Object namespace
 	GOAL_WORKFLOW?: Workflow; // GoalWorkflow binding
+	// Local session launcher relay (LauncherDO)
+	LAUNCHER_DO?: DurableObjectNamespace; // LauncherDO — relays launch commands to local daemons
 	// External service keys (used by cloud agent tools)
 	VALTOWN_API_KEY?: string; // Val Town API key for cloud agent
 	GITHUB_TOKEN?: string; // Optional GitHub token for reading private repos

@@ -47,11 +47,23 @@ const commands = [
 	},
 	{
 		name: 'computeengine',
-		description: 'Launch a persistent Claude Code Discord session on Google Compute Engine',
+		description: 'Launch a Claude Code Discord session on Google Compute Engine (GCE)',
+	},
+	{
+		name: 'oracle',
+		description: 'Launch a Claude Code Discord session on Oracle Cloud Infrastructure (OCI)',
 	},
 	{
 		name: 'cloudrunjobs',
 		description: 'Launch an experimental time-limited Claude Code Discord session as a Cloud Run Job',
+	},
+	{
+		name: 'modal',
+		description: 'Launch a Claude Code Discord session on Modal (serverless, always-on container)',
+	},
+	{
+		name: 'northflank',
+		description: 'Launch a Claude Code Discord session on Northflank (persistent container service)',
 	},
 	{
 		name: 'local',

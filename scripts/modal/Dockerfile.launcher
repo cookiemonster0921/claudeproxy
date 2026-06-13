@@ -1,0 +1,36 @@
+# Dockerfile.launcher — Image for the Modal (and Northflank) launcher daemon.
+#
+# Contains everything needed to run discord_session_launcher.py in background
+# mode: Python 3.11, websockets, Node.js 20, Claude Code CLI, and tmux.
+#
+# Sessions are launched as detached tmux panes inside this container.
+# One container = one daemon listening for frames + N tmux-hosted sessions.
+
+FROM python:3.11-slim
+
+# ── System packages ────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates tmux rsync \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python deps ────────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir websockets
+
+# ── Claude Code CLI ────────────────────────────────────────────────────────────
+RUN npm install -g @anthropic-ai/claude-code
+
+# ── App files ──────────────────────────────────────────────────────────────────
+WORKDIR /app
+COPY discord_session_launcher.py /app/discord_session_launcher.py
+COPY claude-proxy.sh             /app/claude-proxy.sh
+RUN chmod +x /app/claude-proxy.sh
+
+# ── Default env (overridden at runtime via secrets / env vars) ─────────────────
+ENV LAUNCHER_BACKGROUND=1 \
+    CPROXY_SCRIPT=/app/claude-proxy.sh
+
+# ── Entrypoint ────────────────────────────────────────────────────────────────
+# Overridden in modal_launcher.py; used directly by Northflank.
+CMD ["python3", "/app/discord_session_launcher.py"]

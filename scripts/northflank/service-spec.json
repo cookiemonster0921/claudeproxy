@@ -1,0 +1,24 @@
+{
+  "__comment": "Northflank deployment service spec for the Claude Discord launcher daemon.",
+  "__comment2": "Filled in by setup.sh — do not edit IMAGE_PATH or SECRET values manually.",
+  "name": "claude-discord-launcher",
+  "description": "Discord session launcher daemon (LAUNCHER_TARGET=northflank)",
+  "billing": {
+    "deploymentPlan": "nf-compute-10"
+  },
+  "deployment": {
+    "type": "deployment",
+    "instances": 1,
+    "external": {
+      "imagePath": "{{IMAGE_PATH}}"
+    },
+    "docker": {
+      "configType": "default"
+    }
+  },
+  "runtimeEnvironment": {
+    "LAUNCHER_TARGET": "northflank",
+    "LAUNCHER_BACKGROUND": "1",
+    "CPROXY_SCRIPT": "/app/claude-proxy.sh"
+  }
+}

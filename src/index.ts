@@ -17,6 +17,7 @@ import { routeAgentRequest } from 'agents';
 // Re-export Durable Object and Workflow classes for Cloudflare registration
 export { GoalAgent } from './agent/GoalAgent';
 export { GoalWorkflow } from './agent/GoalWorkflow';
+export { LauncherDO } from './agent/LauncherDO';
 
 // ---------------------------------------------------------------------------
 // Analytics helpers
@@ -355,7 +356,14 @@ export default {
 			return new Response(null, { status: 204, headers: CORS_HEADERS });
 		}
 
-		const authError = checkAuth(request, env);
+		// These paths are intentionally unauthenticated:
+		//   /health              — plain reachability probe, no sensitive data
+		//   /discord/*           — Discord authenticates via ed25519 signature, not PROXY_TOKEN
+		const skipAuth =
+			pathname === '/health' ||
+			pathname === '/discord/interactions' ||
+			pathname === '/discord/ops/interactions';
+		const authError = skipAuth ? null : checkAuth(request, env);
 		if (authError) return authError;
 
 		// Only log AI inference requests — skip health, models, dashboard, analytics, etc.
@@ -408,6 +416,58 @@ export default {
 				}
 			} else if (method === 'GET' && pathname === '/discord/health') {
 				response = jsonResponse({ ok: true, discord: !!env.DISCORD_PUBLIC_KEY }, requestId);
+
+			// ── Local session launcher relay (LauncherDO) ─────────────────────
+			// GET /launcher-ws  — WebSocket upgrade for discord_session_launcher.py daemons.
+			//                    Daemons send Authorization: Bearer <PROXY_TOKEN>.
+			// GET /launcher-status — How many daemons are connected (no auth required).
+			} else if (pathname === '/launcher-ws') {
+				if (!env.LAUNCHER_DO) {
+					response = jsonError(503, 'api_error', 'LAUNCHER_DO not configured', requestId);
+				} else if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+					response = jsonError(426, 'api_error', 'Expected WebSocket upgrade', requestId);
+				} else {
+					// Validate the daemon's bearer token before accepting the WebSocket
+					const auth = request.headers.get('Authorization') ?? '';
+					const expectedToken = env.PROXY_TOKEN ?? '';
+					if (expectedToken && auth !== `Bearer ${expectedToken}`) {
+						response = new Response('Unauthorized', { status: 401 });
+					} else {
+						const id = env.LAUNCHER_DO.idFromName('global');
+						const stub = env.LAUNCHER_DO.get(id);
+						response = await stub.fetch(new Request(new URL('/ws', request.url), request));
+					}
+				}
+			} else if (method === 'GET' && pathname === '/launcher-status') {
+				if (!env.LAUNCHER_DO) {
+					response = jsonResponse({ connected_daemons: 0, configured: false }, requestId);
+				} else {
+					const id = env.LAUNCHER_DO.idFromName('global');
+					const stub = env.LAUNCHER_DO.get(id);
+					const r = await stub.fetch(new Request(new URL('/status', request.url)));
+					response = r;
+				}
+			// POST /launcher-dispatch — external dispatch for CLI tools.
+			// Requires Authorization: Bearer <PROXY_TOKEN>.
+			// Body: { command: string, session_id?: string }
+			} else if (method === 'POST' && pathname === '/launcher-dispatch') {
+				const auth = request.headers.get('Authorization') ?? '';
+				const expectedToken = env.PROXY_TOKEN ?? '';
+				if (expectedToken && auth !== `Bearer ${expectedToken}`) {
+					response = new Response('Unauthorized', { status: 401 });
+				} else if (!env.LAUNCHER_DO) {
+					response = jsonError(503, 'api_error', 'LAUNCHER_DO not configured', requestId);
+				} else {
+					const id = env.LAUNCHER_DO.idFromName('global');
+					const stub = env.LAUNCHER_DO.get(id);
+					const r = await stub.fetch(new Request(new URL('/dispatch', request.url), {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: request.body,
+					}));
+					response = r;
+				}
+
 			} else {
 				// Try Cloudflare Agents SDK routing (/agents/* paths for Durable Object agents)
 				const agentResponse = env.GOAL_AGENT ? await routeAgentRequest(request, env) : null;

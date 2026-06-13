@@ -1,0 +1,338 @@
+#!/usr/bin/env bash
+# provision-vm.sh — Create a GCE e2-micro VM for Discord Claude sessions.
+#
+# ── GCE Always Free tier ──────────────────────────────────────────────────────
+#
+#   1 e2-micro instance/month in us-central1, us-west1, or us-east1
+#   30 GB standard persistent disk per month
+#   1 GB network egress to Americas/Europe per month
+#
+#   e2-micro: 2 vCPU (shared-core), 1 GB RAM.
+#   After OS overhead (~350 MB), ~650 MB is available for Claude sessions.
+#   A 2 GB swap file on the standard disk absorbs memory bursts.
+#
+#   This VM runs discord_session_launcher.py which starts Claude sessions in
+#   detached tmux windows on the VM itself — no Docker required.
+#
+# ── One-time prerequisites ───────────────────────────────────────────────────
+#   1. Install gcloud CLI:  https://cloud.google.com/sdk/docs/install
+#   2. Authenticate:        gcloud auth login && gcloud auth application-default login
+#   3. Set project:         gcloud config set project YOUR_PROJECT_ID
+#   4. Enable Compute API:  gcloud services enable compute.googleapis.com
+#
+# ── Usage ─────────────────────────────────────────────────────────────────────
+#   ./scripts/gce/provision-vm.sh                         # create e2-micro VM
+#   ./scripts/gce/provision-vm.sh --connect               # SSH into VM
+#   ./scripts/gce/provision-vm.sh --status                # show VM state
+#   ./scripts/gce/provision-vm.sh --delete                # destroy VM
+#
+#   ./scripts/gce/provision-vm.sh --name my-vm --zone us-west1-b --project my-project
+
+set -euo pipefail
+
+BOLD='\033[1m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'
+info()    { echo -e "${CYAN}[gce]${RESET} $*"; }
+success() { echo -e "${GREEN}[gce]${RESET} $*"; }
+warn()    { echo -e "${YELLOW}[gce]${RESET} $*"; }
+die()     { echo -e "${RED}[gce] ERROR:${RESET} $*" >&2; exit 1; }
+
+# ── Defaults ──────────────────────────────────────────────────────────────────
+VM_NAME="claude-discord-vm"
+GCP_ZONE="us-central1-a"      # free-tier eligible: us-central1, us-west1, us-east1
+MACHINE_TYPE="e2-micro"       # always-free machine type
+DISK_SIZE_GB=30               # within the 30 GB free standard disk allowance
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519.pub}"
+[[ ! -f "$SSH_KEY" ]] && SSH_KEY="$HOME/.ssh/id_rsa.pub"
+SSH_USER="ubuntu"             # Ubuntu images use 'ubuntu'
+MODE="create"                 # create | connect | delete | status
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+STATE_DIR="$SCRIPT_DIR/.state"
+DEV_VARS="$REPO_ROOT/.dev.vars"
+
+mkdir -p "$STATE_DIR"
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --name)    VM_NAME="$2";      shift 2 ;;
+        --zone)    GCP_ZONE="$2";     shift 2 ;;
+        --project) GCP_PROJECT="$2";  shift 2 ;;
+        --ssh-key) SSH_KEY="$2";      shift 2 ;;
+        --connect) MODE="connect";    shift   ;;
+        --delete)  MODE="delete";     shift   ;;
+        --status)  MODE="status";     shift   ;;
+        --help|-h) grep '^#' "$0" | head -40 | sed 's/^# \?//'; exit 0 ;;
+        *) die "Unknown flag: $1. Run with --help." ;;
+    esac
+done
+
+STATE_FILE="$STATE_DIR/${VM_NAME}.env"
+
+# ── Prerequisite checks ───────────────────────────────────────────────────────
+command -v gcloud &>/dev/null || die "gcloud CLI not installed. See https://cloud.google.com/sdk/docs/install"
+command -v ssh    &>/dev/null || die "ssh is required."
+command -v rsync  &>/dev/null || die "rsync is required."
+[[ -f "$SSH_KEY" ]]            || die "SSH public key not found: $SSH_KEY  (run: ssh-keygen -t ed25519)"
+
+# ── Resolve GCP project ───────────────────────────────────────────────────────
+GCP_PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null || true)}"
+[[ -n "$GCP_PROJECT" && "$GCP_PROJECT" != "(unset)" ]] ||
+    die "GCP project not set. Run: gcloud config set project YOUR_PROJECT_ID  or pass --project."
+
+# Derive region from zone (e.g. us-central1-a → us-central1)
+GCP_REGION="${GCP_ZONE%-*}"
+
+# SSH convenience helpers ─────────────────────────────────────────────────────
+ssh_cmd() {
+    local ip="$1"; shift
+    ssh -i "${SSH_KEY%.pub}" \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=10 \
+        -o BatchMode=yes \
+        "$SSH_USER@$ip" "$@"
+}
+
+wait_for_ssh() {
+    local ip="$1"
+    info "Waiting for SSH on $ip..."
+    for i in $(seq 1 60); do
+        if ssh_cmd "$ip" "echo ok" &>/dev/null; then
+            echo ""
+            success "SSH ready."
+            return
+        fi
+        printf "."
+        sleep 5
+    done
+    echo ""
+    die "SSH did not become available within 5 minutes."
+}
+
+# ── State helpers ─────────────────────────────────────────────────────────────
+state_write() {
+    cat > "$STATE_FILE" << EOF
+# Auto-generated by provision-vm.sh — do not edit manually.
+GCE_INSTANCE_NAME="$1"
+GCE_PROJECT="$2"
+GCE_ZONE="$3"
+GCE_PUBLIC_IP="$4"
+SSH_USER="$SSH_USER"
+VM_NAME="$VM_NAME"
+EOF
+    chmod 600 "$STATE_FILE"
+}
+
+state_load() {
+    [[ -f "$STATE_FILE" ]] || die "No state found for '$VM_NAME'. Run provision-vm.sh to create it."
+    # shellcheck source=/dev/null
+    source "$STATE_FILE"
+}
+
+# ── STATUS ────────────────────────────────────────────────────────────────────
+if [[ "$MODE" == "status" ]]; then
+    state_load
+    echo ""
+    echo -e "${BOLD}  GCE VM: $VM_NAME${RESET}"
+    echo "  Project : $GCE_PROJECT"
+    echo "  Zone    : $GCE_ZONE"
+    echo "  Public IP: $GCE_PUBLIC_IP"
+    echo ""
+    LIFECYCLE=$(gcloud compute instances describe "$GCE_INSTANCE_NAME" \
+        --project="$GCE_PROJECT" \
+        --zone="$GCE_ZONE" \
+        --format='value(status)' 2>/dev/null || echo "UNKNOWN")
+    echo "  State   : $LIFECYCLE"
+    echo ""
+    if [[ "$LIFECYCLE" == "RUNNING" ]]; then
+        echo "  Launcher daemon:"
+        ssh_cmd "$GCE_PUBLIC_IP" \
+            "systemctl is-active claude-launcher 2>/dev/null && echo '    active' || echo '    not running'" 2>/dev/null || true
+        echo ""
+        echo "  Running tmux sessions:"
+        ssh_cmd "$GCE_PUBLIC_IP" \
+            "tmux ls 2>/dev/null | grep cproxy_ | sed 's/^/    /' || echo '    (none)'" 2>/dev/null || true
+    fi
+    echo ""
+    exit 0
+fi
+
+# ── CONNECT ───────────────────────────────────────────────────────────────────
+if [[ "$MODE" == "connect" ]]; then
+    state_load
+    info "Connecting to $VM_NAME ($GCE_PUBLIC_IP)..."
+    exec ssh -i "${SSH_KEY%.pub}" \
+        -o StrictHostKeyChecking=no \
+        "$SSH_USER@$GCE_PUBLIC_IP"
+fi
+
+# ── DELETE ────────────────────────────────────────────────────────────────────
+if [[ "$MODE" == "delete" ]]; then
+    state_load
+    echo ""
+    warn "This will permanently delete VM '$VM_NAME' in project '$GCE_PROJECT'."
+    warn "All tmux sessions, installed software, and disk data will be destroyed."
+    echo ""
+    read -rp "  Type the VM name to confirm: " confirm
+    [[ "$confirm" != "$VM_NAME" ]] && { echo "  Aborted."; exit 1; }
+
+    info "Deleting instance $GCE_INSTANCE_NAME..."
+    gcloud compute instances delete "$GCE_INSTANCE_NAME" \
+        --project="$GCE_PROJECT" \
+        --zone="$GCE_ZONE" \
+        --quiet
+
+    rm -f "$STATE_FILE"
+    success "VM '$VM_NAME' deleted."
+    exit 0
+fi
+
+# ── CREATE ────────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BOLD}  Google Cloud — Provisioning Discord Bot VM${RESET}"
+echo "  Machine : $MACHINE_TYPE (2 vCPU shared, 1 GB RAM)"
+echo "  Name    : $VM_NAME"
+echo "  Zone    : $GCP_ZONE"
+echo "  Project : $GCP_PROJECT"
+echo "  SSH key : $SSH_KEY"
+echo ""
+warn "e2-micro has only 1 GB RAM. After OS (~350 MB) and swap setup, ~650 MB"
+warn "is available for Claude sessions. One session at a time is typical."
+echo ""
+
+# Check VM doesn't already exist
+if gcloud compute instances describe "$VM_NAME" \
+    --project="$GCP_PROJECT" \
+    --zone="$GCP_ZONE" \
+    --quiet >/dev/null 2>&1; then
+    die "VM '$VM_NAME' already exists in $GCP_ZONE. Use --delete first, or --connect to SSH in."
+fi
+
+# ── Step 1: Ensure Compute API is enabled ────────────────────────────────────
+info "Enabling Compute Engine API..."
+gcloud services enable compute.googleapis.com --project="$GCP_PROJECT" --quiet
+
+# ── Step 2: Add SSH key to project metadata ───────────────────────────────────
+# Adds your public key as a project-wide SSH key so direct `ssh` works.
+# format: "username:ssh-ed25519 AAAA... comment"
+info "Adding SSH public key to project metadata..."
+PUB_KEY_CONTENT="$(cat "$SSH_KEY")"
+EXISTING_KEYS="$(gcloud compute project-info describe \
+    --project="$GCP_PROJECT" \
+    --format='value(commonInstanceMetadata.items[ssh-keys])' 2>/dev/null || true)"
+
+# Only add if not already present
+if echo "$EXISTING_KEYS" | grep -qF "$PUB_KEY_CONTENT"; then
+    info "SSH key already in project metadata."
+else
+    NEW_ENTRY="${SSH_USER}:${PUB_KEY_CONTENT}"
+    if [[ -n "$EXISTING_KEYS" ]]; then
+        MERGED="${EXISTING_KEYS}"$'\n'"${NEW_ENTRY}"
+    else
+        MERGED="${NEW_ENTRY}"
+    fi
+    gcloud compute project-info add-metadata \
+        --project="$GCP_PROJECT" \
+        --metadata="ssh-keys=${MERGED}" \
+        --quiet
+    info "SSH key added."
+fi
+
+# ── Step 3: Create firewall rule allowing SSH (idempotent) ───────────────────
+FIREWALL_RULE="allow-ssh"
+if ! gcloud compute firewall-rules describe "$FIREWALL_RULE" \
+    --project="$GCP_PROJECT" \
+    --quiet >/dev/null 2>&1; then
+    info "Creating firewall rule '$FIREWALL_RULE' (allow TCP:22 from anywhere)..."
+    gcloud compute firewall-rules create "$FIREWALL_RULE" \
+        --project="$GCP_PROJECT" \
+        --allow=tcp:22 \
+        --source-ranges=0.0.0.0/0 \
+        --description="Allow SSH for Discord bot VM" \
+        --quiet
+else
+    info "Firewall rule '$FIREWALL_RULE' already exists."
+fi
+
+# ── Step 4: Launch the instance ───────────────────────────────────────────────
+info "Launching instance ($MACHINE_TYPE) in $GCP_ZONE..."
+gcloud compute instances create "$VM_NAME" \
+    --project="$GCP_PROJECT" \
+    --zone="$GCP_ZONE" \
+    --machine-type="$MACHINE_TYPE" \
+    --image-family=ubuntu-2204-lts \
+    --image-project=ubuntu-os-cloud \
+    --boot-disk-type=pd-standard \
+    --boot-disk-size="${DISK_SIZE_GB}GB" \
+    --metadata=enable-oslogin=FALSE \
+    --quiet
+
+success "Instance created: $VM_NAME"
+
+# ── Step 5: Get public IP ─────────────────────────────────────────────────────
+info "Fetching public IP..."
+PUBLIC_IP=$(gcloud compute instances describe "$VM_NAME" \
+    --project="$GCP_PROJECT" \
+    --zone="$GCP_ZONE" \
+    --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+[[ -n "$PUBLIC_IP" && "$PUBLIC_IP" != "None" ]] || die "Could not get public IP."
+success "Public IP: $PUBLIC_IP"
+
+# ── Step 6: Save state ────────────────────────────────────────────────────────
+state_write "$VM_NAME" "$GCP_PROJECT" "$GCP_ZONE" "$PUBLIC_IP"
+
+# ── Step 7: Wait for SSH ──────────────────────────────────────────────────────
+wait_for_ssh "$PUBLIC_IP"
+
+# ── Step 8: Install prerequisites ────────────────────────────────────────────
+info "Installing prerequisites on VM (Node.js, Python, tmux, swap)..."
+ssh_cmd "$PUBLIC_IP" "bash -s" << 'SETUP'
+set -e
+export DEBIAN_FRONTEND=noninteractive
+
+# Node.js 20 LTS
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y --no-install-recommends nodejs python3-pip tmux rsync ca-certificates
+
+# Python websockets for the launcher daemon
+pip3 install --quiet websockets
+
+# Claude Code CLI
+sudo npm install -g @anthropic-ai/claude-code
+
+# 2 GB swap to reduce OOM risk on 1 GB RAM
+if [[ ! -f /swapfile ]]; then
+    sudo fallocate -l 2G /swapfile
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+    echo "[setup] Swap: $(free -h | grep Swap)"
+fi
+
+echo "[setup] Node: $(node --version)"
+echo "[setup] npm: $(npm --version)"
+echo "[setup] claude: $(claude --version 2>/dev/null || echo 'installed, needs auth')"
+echo "[setup] tmux: $(tmux -V)"
+echo "[setup] python3: $(python3 --version)"
+SETUP
+
+# ── Done ──────────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BOLD}  VM ready.${RESET}"
+echo "  Name    : $VM_NAME"
+echo "  Zone    : $GCP_ZONE"
+echo "  IP      : $PUBLIC_IP"
+echo "  State   : $STATE_FILE"
+echo ""
+echo "  Next steps:"
+echo "    Install the launcher daemon:"
+echo "    ./scripts/gce/setup-launcher.sh"
+echo ""
+echo "  Reconnect:"
+echo "    ./scripts/gce/provision-vm.sh --connect"
+echo ""
+echo "  Destroy everything:"
+echo "    ./scripts/gce/provision-vm.sh --delete"
+echo ""

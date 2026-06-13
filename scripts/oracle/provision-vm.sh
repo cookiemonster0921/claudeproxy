@@ -149,7 +149,7 @@ if [[ "$MODE" == "status" ]]; then
     echo "  Region   : $OCI_REGION"
     echo "  Public IP: $OCI_PUBLIC_IP"
     echo ""
-    LIFECYCLE=$(oci compute instance get --instance-id "$OCI_INSTANCE_ID" $OCI_FLAGS \
+    LIFECYCLE=$(SUPPRESS_LABEL_WARNING=True oci compute instance get --instance-id "$OCI_INSTANCE_ID" $OCI_FLAGS \
         2>/dev/null | jq -r '.data."lifecycle-state"' || echo "unknown")
     echo "  State    : $LIFECYCLE"
     echo ""
@@ -191,7 +191,7 @@ if [[ "$MODE" == "delete" ]]; then
 
     info "Waiting for instance to terminate..."
     for i in $(seq 1 60); do
-        STATE=$(oci compute instance get --instance-id "$OCI_INSTANCE_ID" $OCI_FLAGS \
+        STATE=$(SUPPRESS_LABEL_WARNING=True oci compute instance get --instance-id "$OCI_INSTANCE_ID" $OCI_FLAGS \
             2>/dev/null | jq -r '.data."lifecycle-state"' || echo "TERMINATED")
         [[ "$STATE" == "TERMINATED" ]] && break
         printf "."
@@ -262,7 +262,7 @@ info "Image: $IMAGE_ID"
 
 # ── Step 3: Create VCN ────────────────────────────────────────────────────────
 info "Creating VCN..."
-VCN_ID=$(oci network vcn create \
+VCN_ID=$(SUPPRESS_LABEL_WARNING=True oci network vcn create \
     --compartment-id "$TENANCY_ID" \
     --cidr-block "10.0.0.0/16" \
     --display-name "${VM_NAME}-vcn" \
@@ -274,7 +274,7 @@ info "VCN: $VCN_ID"
 
 # ── Step 4: Create Internet Gateway ──────────────────────────────────────────
 info "Creating Internet Gateway..."
-IGW_ID=$(oci network internet-gateway create \
+IGW_ID=$(SUPPRESS_LABEL_WARNING=True oci network internet-gateway create \
     --compartment-id "$TENANCY_ID" \
     --vcn-id "$VCN_ID" \
     --is-enabled true \
@@ -323,7 +323,7 @@ oci network security-list update \
 
 # ── Step 7: Create public subnet ──────────────────────────────────────────────
 info "Creating public subnet..."
-SUBNET_ID=$(oci network subnet create \
+SUBNET_ID=$(SUPPRESS_LABEL_WARNING=True oci network subnet create \
     --compartment-id "$TENANCY_ID" \
     --vcn-id "$VCN_ID" \
     --cidr-block "10.0.0.0/24" \
@@ -345,25 +345,60 @@ else
     SHAPE_CONFIG='{"ocpus":0.125,"memoryInGBs":1}'
 fi
 
-SSH_PUB_KEY=$(cat "$SSH_KEY")
-INSTANCE_ID=$(oci compute instance launch \
-    --compartment-id "$TENANCY_ID" \
-    --availability-domain "$AD_NAME" \
-    --shape "$OCI_SHAPE" \
-    --shape-config "$SHAPE_CONFIG" \
-    --source-details "{\"sourceType\":\"image\",\"imageId\":\"$IMAGE_ID\",\"bootVolumeSizeInGBs\":$BOOT_VOLUME_GB}" \
-    --create-vnic-details "{\"subnetId\":\"$SUBNET_ID\",\"assignPublicIp\":true,\"displayName\":\"${VM_NAME}-vnic\"}" \
-    --metadata "{\"ssh_authorized_keys\":\"$SSH_PUB_KEY\"}" \
-    --display-name "$VM_NAME" \
-    $OCI_FLAGS \
-    | jq -r '.data.id')
-[[ -z "$INSTANCE_ID" ]] && die "Failed to launch instance."
+# OCI CLI 3.85+ uses flat parameters instead of --create-vnic-details JSON blob.
+# --ssh-authorized-keys-file requires a file path, not inline text.
+# ARM Always Free capacity in a region is often exhausted. Retry until a slot
+# opens up — capacity is released randomly as other users stop/delete VMs.
+# Ctrl+C to abort. The VCN/subnet remain so the next retry reuses them.
+SSH_KEYFILE=$(mktemp)   # macOS mktemp doesn't support suffix after XXXXXX
+cat "$SSH_KEY" > "$SSH_KEYFILE"
+trap 'rm -f "$SSH_KEYFILE"' EXIT
+
+INSTANCE_ID=""
+ATTEMPT=0
+RETRY_DELAY=60   # seconds between retries
+while [[ -z "$INSTANCE_ID" || "$INSTANCE_ID" == "null" ]]; do
+    ATTEMPT=$(( ATTEMPT + 1 ))
+    if [[ $ATTEMPT -gt 1 ]]; then
+        warn "Capacity not available yet (attempt $ATTEMPT). Retrying in ${RETRY_DELAY}s... (Ctrl+C to abort)"
+        sleep "$RETRY_DELAY"
+    fi
+
+    LAUNCH_OUTPUT=$(SUPPRESS_LABEL_WARNING=True oci compute instance launch \
+        --compartment-id "$TENANCY_ID" \
+        --availability-domain "$AD_NAME" \
+        --shape "$OCI_SHAPE" \
+        --shape-config "$SHAPE_CONFIG" \
+        --image-id "$IMAGE_ID" \
+        --boot-volume-size-in-gbs "$BOOT_VOLUME_GB" \
+        --subnet-id "$SUBNET_ID" \
+        --assign-public-ip true \
+        --vnic-display-name "${VM_NAME}-vnic" \
+        --ssh-authorized-keys-file "$SSH_KEYFILE" \
+        --display-name "$VM_NAME" \
+        $OCI_FLAGS 2>&1)
+
+    INSTANCE_ID=$(echo "$LAUNCH_OUTPUT" | jq -r '.data.id' 2>/dev/null || true)
+
+    if [[ -z "$INSTANCE_ID" || "$INSTANCE_ID" == "null" ]]; then
+        # Show the error once on first attempt, then just the reason on retries
+        ERROR_MSG=$(echo "$LAUNCH_OUTPUT" | python3 -c \
+            "import json,sys; d=json.load(sys.stdin); print(d.get('message','unknown error'))" \
+            2>/dev/null || echo "$LAUNCH_OUTPUT")
+        if [[ $ATTEMPT -eq 1 ]]; then
+            warn "Launch failed: $ERROR_MSG"
+        else
+            warn "Still waiting: $ERROR_MSG"
+        fi
+    fi
+done
+
 info "Instance launched: $INSTANCE_ID"
 
 # ── Step 9: Wait for RUNNING ──────────────────────────────────────────────────
 info "Waiting for instance to reach RUNNING state..."
 for i in $(seq 1 60); do
-    LIFECYCLE=$(oci compute instance get --instance-id "$INSTANCE_ID" $OCI_FLAGS \
+    LIFECYCLE=$(SUPPRESS_LABEL_WARNING=True oci compute instance get --instance-id "$INSTANCE_ID" $OCI_FLAGS \
         | jq -r '.data."lifecycle-state"')
     [[ "$LIFECYCLE" == "RUNNING" ]] && break
     printf "."
@@ -374,7 +409,7 @@ echo ""
 
 # ── Step 10: Get public IP ────────────────────────────────────────────────────
 info "Fetching public IP..."
-PUBLIC_IP=$(oci compute instance list-vnics \
+PUBLIC_IP=$(SUPPRESS_LABEL_WARNING=True oci compute instance list-vnics \
     --instance-id "$INSTANCE_ID" \
     $OCI_FLAGS \
     | jq -r '.data[0]."public-ip"')

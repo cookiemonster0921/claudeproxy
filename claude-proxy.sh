@@ -44,10 +44,10 @@ fi
 
 NVIDIA_MODELS=(
 	"Llama 3.3 70B Instruct (fast)         |nvidia_nim/meta/llama-3.3-70b-instruct"
-	"Llama 3.1 405B Instruct               |nvidia_nim/meta/llama-3.1-405b-instruct"
-	"DeepSeek R1 (reasoning)               |nvidia_nim/deepseek/deepseek-r1"
-	"Qwen 2.5 Coder 32B                    |nvidia_nim/qwen/qwen2.5-coder-32b-instruct"
-	"Mistral NeMo 12B                      |nvidia_nim/nv-mistralai/mistral-nemo-12b-instruct"
+	"Llama 4 Maverick 17B Instruct         |nvidia_nim/meta/llama-4-maverick-17b-128e-instruct"
+	"DeepSeek V4 Flash                     |nvidia_nim/deepseek-ai/deepseek-v4-flash"
+	"Nemotron Super 49B (reasoning)        |nvidia_nim/nvidia/llama-3.3-nemotron-super-49b-v1"
+	"Nemotron Nano 8B (fast/cheap)         |nvidia_nim/nvidia/llama-3.1-nemotron-nano-8b-v1"
 )
 
 OPENROUTER_MODELS=(
@@ -570,6 +570,27 @@ on)
 	done
 	if [[ "$_discord_in_args" == true ]]; then
 		"$SCRIPT_DIR/scripts/sync-discord-plugin.sh" 2>/dev/null || true
+
+		# ── Ensure the resolved Discord state dir has a .env with DISCORD_BOT_TOKEN ──
+		# docker/discord-plugin/server.ts reads <DISCORD_STATE_DIR>/.env (default
+		# ~/.claude/channels/discord/.env) for DISCORD_BOT_TOKEN. Per-channel state
+		# dirs created by --discord-channel (DISCORD_STATE_DIR=~/.claude/discord-sessions/<id>)
+		# start out empty, so the plugin's TOKEN check fails and it calls
+		# process.exit(1) before DEBUG_LOG/dbg() are even initialized — i.e. it
+		# crashes silently on startup with nothing visible in the Claude Code TUI,
+		# and the channel never relays messages.
+		_discord_state_dir="${DISCORD_STATE_DIR:-${HOME}/.claude/channels/discord}"
+		_discord_state_dir="${_discord_state_dir/#\~/$HOME}"
+		_discord_env_file="$_discord_state_dir/.env"
+		if [[ ! -s "$_discord_env_file" ]] && [[ -f "$SCRIPT_DIR/.dev.vars" ]]; then
+			_bot_token=$(grep -E '^DISCORD_BOT_TOKEN=' "$SCRIPT_DIR/.dev.vars" | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)
+			if [[ -n "$_bot_token" ]]; then
+				mkdir -p "$_discord_state_dir"
+				echo "DISCORD_BOT_TOKEN=$_bot_token" > "$_discord_env_file"
+				chmod 600 "$_discord_env_file"
+				echo "  Discord bot token written to $_discord_env_file"
+			fi
+		fi
 	fi
 
 	if [[ -n "$DISCORD_CHANNEL_IDS" || -n "$DISCORD_USER_IDS" || -n "$DISCORD_DM_POLICY" ]]; then
@@ -587,7 +608,10 @@ on)
 			esac
 		fi
 
-		DISCORD_ACCESS_FILE="${HOME}/.claude/channels/discord/access.json"
+		# Respect DISCORD_STATE_DIR when set (multi-session router mode).
+		# Each channel gets its own state dir so sessions don't share access.json.
+		# Falls back to the default single-session path when not set.
+		DISCORD_ACCESS_FILE="${DISCORD_STATE_DIR:-${HOME}/.claude/channels/discord}/access.json"
 		mkdir -p "$(dirname "$DISCORD_ACCESS_FILE")"
 
 		# Use env vars to pass values safely to Python (avoids quoting/escaping issues)
@@ -796,6 +820,12 @@ for m in data.get('data', []):
 			CLAUDE_ARGS=(--setting-sources project,local "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}")
 		fi
 
+		# -u ANTHROPIC_API_KEY: a key may be set in the environment (e.g. so the
+		# bootstrap `claude --print` step can skip the login prompt), but the
+		# running session must authenticate to the Worker via ANTHROPIC_AUTH_TOKEN
+		# (Authorization: Bearer <PROXY_TOKEN>). Having both set triggers Claude
+		# Code's "both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY set" warning and
+		# can make it ignore the gateway token, so unset the API key for this run.
 		env \
 			-u CLAUDE_CODE_USE_VERTEX \
 			-u ANTHROPIC_VERTEX_PROJECT_ID \
@@ -805,6 +835,7 @@ for m in data.get('data', []):
 			-u ANTHROPIC_BEDROCK_BASE_URL \
 			-u CLAUDE_CODE_USE_ANTHROPIC_AWS \
 			-u ANTHROPIC_AWS_BASE_URL \
+			-u ANTHROPIC_API_KEY \
 			ANTHROPIC_BASE_URL="$ACTIVE_URL" \
 			ANTHROPIC_AUTH_TOKEN="$AUTH" \
 			CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY="1" \
@@ -867,6 +898,9 @@ for m in data.get('data', []):
 		CLAUDE_ARGS=(--setting-sources project,local "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}")
 	fi
 
+	# -u ANTHROPIC_API_KEY: avoid the "both ANTHROPIC_AUTH_TOKEN and
+	# ANTHROPIC_API_KEY set" warning/ambiguity — the local proxy session
+	# authenticates via ANTHROPIC_AUTH_TOKEN (Authorization: Bearer <token>).
 	env \
 		-u CLAUDE_CODE_USE_VERTEX \
 		-u ANTHROPIC_VERTEX_PROJECT_ID \
@@ -876,6 +910,7 @@ for m in data.get('data', []):
 		-u ANTHROPIC_BEDROCK_BASE_URL \
 		-u CLAUDE_CODE_USE_ANTHROPIC_AWS \
 		-u ANTHROPIC_AWS_BASE_URL \
+		-u ANTHROPIC_API_KEY \
 		ANTHROPIC_BASE_URL="$PROXY_URL" \
 		ANTHROPIC_AUTH_TOKEN="$AUTH" \
 		CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY="1" \

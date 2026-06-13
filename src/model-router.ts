@@ -68,11 +68,11 @@ export const PROVIDER_CATALOG: CatalogModel[] = [
 
 	// ── NVIDIA NIM ───────────────────────────────────────────────────────────
 	// Full provider-qualified IDs — same slash-split routing as OpenRouter.
-	{ id: 'nvidia_nim/meta/llama-3.3-70b-instruct',      display_name: 'Llama 3.3 70B Instruct (fast)', owned_by: 'nvidia_nim', requires_key: 'NVIDIA_NIM_API_KEY' },
-	{ id: 'nvidia_nim/meta/llama-3.1-405b-instruct',     display_name: 'Llama 3.1 405B Instruct',       owned_by: 'nvidia_nim', requires_key: 'NVIDIA_NIM_API_KEY' },
-	{ id: 'nvidia_nim/deepseek/deepseek-r1',             display_name: 'DeepSeek R1 (reasoning)',        owned_by: 'nvidia_nim', requires_key: 'NVIDIA_NIM_API_KEY' },
-	{ id: 'nvidia_nim/qwen/qwen2.5-coder-32b-instruct',  display_name: 'Qwen 2.5 Coder 32B',            owned_by: 'nvidia_nim', requires_key: 'NVIDIA_NIM_API_KEY' },
-	{ id: 'nvidia_nim/nv-mistralai/mistral-nemo-12b-instruct', display_name: 'Mistral NeMo 12B',         owned_by: 'nvidia_nim', requires_key: 'NVIDIA_NIM_API_KEY' },
+	{ id: 'nvidia_nim/meta/llama-3.3-70b-instruct',                display_name: 'Llama 3.3 70B Instruct (fast)',   owned_by: 'nvidia_nim', requires_key: 'NVIDIA_NIM_API_KEY' },
+	{ id: 'nvidia_nim/meta/llama-4-maverick-17b-128e-instruct',   display_name: 'Llama 4 Maverick 17B Instruct',  owned_by: 'nvidia_nim', requires_key: 'NVIDIA_NIM_API_KEY' },
+	{ id: 'nvidia_nim/deepseek-ai/deepseek-v4-flash',             display_name: 'DeepSeek V4 Flash',              owned_by: 'nvidia_nim', requires_key: 'NVIDIA_NIM_API_KEY' },
+	{ id: 'nvidia_nim/nvidia/llama-3.3-nemotron-super-49b-v1',    display_name: 'Nemotron Super 49B (reasoning)', owned_by: 'nvidia_nim', requires_key: 'NVIDIA_NIM_API_KEY' },
+	{ id: 'nvidia_nim/nvidia/llama-3.1-nemotron-nano-8b-v1',      display_name: 'Nemotron Nano 8B (fast)',        owned_by: 'nvidia_nim', requires_key: 'NVIDIA_NIM_API_KEY' },
 ];
 
 // Workers AI model map — maps short IDs and Claude model names → CF Workers AI model IDs.

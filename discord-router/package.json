@@ -1,0 +1,20 @@
+{
+  "name": "discord-router",
+  "version": "1.0.0",
+  "description": "Discord gateway singleton — routes messages to N Claude plugin instances",
+  "type": "module",
+  "scripts": {
+    "start": "node --import tsx/esm router.ts",
+    "dev":   "npx tsx --watch router.ts"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

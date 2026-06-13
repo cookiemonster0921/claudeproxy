@@ -1,0 +1,30 @@
+# Dockerfile.launcher — Northflank launcher daemon image.
+# Identical to scripts/modal/Dockerfile.launcher (shared base).
+# Symlink or copy as needed; kept separate for independent build contexts.
+#
+# Build + push:
+#   docker build -f scripts/northflank/Dockerfile.launcher \
+#       -t YOUR_DOCKERHUB_USER/claude-launcher:latest .
+#   docker push YOUR_DOCKERHUB_USER/claude-launcher:latest
+
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates tmux rsync \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir websockets
+
+RUN npm install -g @anthropic-ai/claude-code
+
+WORKDIR /app
+COPY discord_session_launcher.py /app/discord_session_launcher.py
+COPY claude-proxy.sh             /app/claude-proxy.sh
+RUN chmod +x /app/claude-proxy.sh
+
+ENV LAUNCHER_BACKGROUND=1 \
+    CPROXY_SCRIPT=/app/claude-proxy.sh
+
+CMD ["python3", "/app/discord_session_launcher.py"]

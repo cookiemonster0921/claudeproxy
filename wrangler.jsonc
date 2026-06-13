@@ -48,11 +48,13 @@
 	 */
 	"durable_objects": {
 		"bindings": [
-			{ "name": "GOAL_AGENT", "class_name": "GoalAgent" }
+			{ "name": "GOAL_AGENT",   "class_name": "GoalAgent"   },
+			{ "name": "LAUNCHER_DO",  "class_name": "LauncherDO"  }
 		]
 	},
 	"migrations": [
-		{ "tag": "v1", "new_sqlite_classes": ["GoalAgent"] }
+		{ "tag": "v1", "new_sqlite_classes": ["GoalAgent"] },
+		{ "tag": "v2", "new_sqlite_classes": ["LauncherDO"] }
 	],
 	"workflows": [
 		{
@@ -68,7 +70,10 @@
 		"DISCORD_ADMIN_ROLE_IDS": "",
 		"DISCORD_STORE_MESSAGES": "true",
 		"DISCORD_ENABLE_ADMIN_COMMANDS": "true",
-		"DEFAULT_MODEL": "openrouter/anthropic/claude-sonnet-4-5"
+		"DEFAULT_MODEL": "openrouter/anthropic/claude-sonnet-4-5",
+		// Ed25519 public key for the operations bot — not a secret, safe to commit.
+		// Find it in Discord Developer Portal → your ops bot app → General Information → Public Key.
+		"OPS_BOT_PUBLIC_KEY": "b397582368fd1abf1dbc4b90b4a4564301dd24edb96296666b21172d54d69804"
 	}
 	/**
 	 * Static Assets
