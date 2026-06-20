@@ -670,6 +670,12 @@ async def handle_message(raw: str, ws, cfg: dict) -> None:
         )
         return
 
+    # compute_* frames come from the sessions web UI (no "command" field).
+    frame_type = msg.get("frame_type", "")
+    if frame_type.startswith("compute_"):
+        await handle_compute_frame(msg, ws)
+        return
+
     if not command:
         log.warning("Frame has no 'command' field: %s", msg)
         return
@@ -721,6 +727,121 @@ async def handle_message(raw: str, ws, cfg: dict) -> None:
 
 # ── WebSocket connection loop ──────────────────────────────────────────────────
 
+async def handle_compute_frame(msg: dict, ws) -> None:
+    """Handle compute_* control frames from the sessions web UI.
+
+    These are sent BY the Worker TO the daemon to inspect/manage tmux sessions.
+    Each handler echoes request_id so the Worker can correlate the response.
+    Session names are validated: must start with cproxy_ and contain no path separators.
+    """
+    frame_type = msg.get("frame_type", "")
+    request_id = msg.get("request_id", "")
+    session    = msg.get("session", "").strip()
+
+    log.info(
+        "[compute] frame_type=%s session=%r request_id=%s",
+        frame_type, session or "(none)", request_id or "(none)",
+    )
+
+    async def respond(data: dict) -> None:
+        await ws.send(json.dumps({"request_id": request_id, **data}))
+
+    def _valid_session(s: str) -> bool:
+        return bool(s) and s.startswith("cproxy_") and "/" not in s and ".." not in s
+
+    if frame_type == "compute_list_sessions":
+        try:
+            r = subprocess.run(
+                ["tmux", "ls", "-F", "#{session_name}\t#{session_attached}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            sessions = []
+            for line in r.stdout.strip().splitlines():
+                parts = line.split("\t")
+                name = parts[0] if parts else ""
+                if not name.startswith("cproxy_"):
+                    continue
+                sessions.append({
+                    "name": name,
+                    "attached": parts[1] == "1" if len(parts) > 1 else False,
+                })
+            await respond({"status": "ok", "sessions": sessions})
+        except FileNotFoundError:
+            await respond({"status": "error", "error": "tmux not found"})
+        except subprocess.TimeoutExpired:
+            await respond({"status": "error", "error": "tmux ls timed out"})
+        except Exception as exc:
+            await respond({"status": "error", "error": str(exc)})
+
+    elif frame_type == "compute_capture_session":
+        if not _valid_session(session):
+            await respond({"status": "error", "error": "Invalid or missing session name (must start with cproxy_)"})
+            return
+        try:
+            r = subprocess.run(
+                ["tmux", "capture-pane", "-t", session, "-p", "-S", "-200"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode != 0:
+                await respond({"status": "error", "error": r.stderr.strip() or "capture-pane failed"})
+            else:
+                await respond({"status": "ok", "output": r.stdout})
+        except subprocess.TimeoutExpired:
+            await respond({"status": "error", "error": "capture-pane timed out"})
+        except Exception as exc:
+            await respond({"status": "error", "error": str(exc)})
+
+    elif frame_type == "compute_send_text":
+        if not _valid_session(session):
+            await respond({"status": "error", "error": "Invalid or missing session name (must start with cproxy_)"})
+            return
+        text = msg.get("text", "")
+        if not isinstance(text, str):
+            await respond({"status": "error", "error": "text must be a string"})
+            return
+        log.info("[compute] send-keys to %s: %r", session, text[:80])
+        try:
+            # -l sends text literally (not as key names), then a separate Enter key
+            subprocess.run(
+                ["tmux", "send-keys", "-t", session, "-l", text],
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+            subprocess.run(
+                ["tmux", "send-keys", "-t", session, "Enter"],
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+            await respond({"status": "ok"})
+        except subprocess.CalledProcessError as exc:
+            await respond({"status": "error", "error": exc.stderr.strip() or "send-keys failed"})
+        except subprocess.TimeoutExpired:
+            await respond({"status": "error", "error": "send-keys timed out"})
+        except Exception as exc:
+            await respond({"status": "error", "error": str(exc)})
+
+    elif frame_type == "compute_kill_session":
+        if not _valid_session(session):
+            await respond({"status": "error", "error": "Invalid or missing session name (must start with cproxy_)"})
+            return
+        log.info("[compute] killing session %s", session)
+        try:
+            r = subprocess.run(
+                ["tmux", "kill-session", "-t", session],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode != 0:
+                await respond({"status": "error", "error": r.stderr.strip() or "kill-session failed"})
+            else:
+                await respond({"status": "ok"})
+        except subprocess.TimeoutExpired:
+            await respond({"status": "error", "error": "kill-session timed out"})
+        except Exception as exc:
+            await respond({"status": "error", "error": str(exc)})
+
+    else:
+        log.warning("[compute] Unknown frame_type: %s", frame_type)
+        await respond({"status": "error", "error": f"Unknown frame_type: {frame_type}"})
+
+
 async def connect_and_listen(cfg: dict) -> None:
     """
     Maintain a persistent WebSocket connection to the Durable Object.
@@ -751,7 +872,9 @@ async def connect_and_listen(cfg: dict) -> None:
                 ping_timeout=15,         # if no pong in 15 s, treat as disconnected
                 close_timeout=10,
             ) as ws:
-                log.info("Connected. Waiting for launch commands …")
+                # Announce our target so the DO can route compute_* frames to us.
+                await ws.send(json.dumps({"type": "hello", "target": cfg["target"]}))
+                log.info("Connected (target=%s). Waiting for commands …", cfg["target"])
                 delay = RECONNECT_DELAY_MIN   # reset backoff on successful connect
 
                 async for raw in ws:

@@ -97,10 +97,12 @@ rsync_if_exists "$CLAUDE_DIR/commands/" "~/.claude/commands/" "commands/"
 # ── plugins/ — plugin metadata (not the plugin cache, just the manifest) ──────
 # Sync installed_plugins.json and known_marketplaces.json only.
 # The actual plugin binaries are in cache/ which is large and platform-specific.
+# known_marketplaces.json is handled separately below (its installLocation
+# needs rewriting for the VM's $HOME, same as installed_plugins.json).
 if [[ -d "$CLAUDE_DIR/plugins" ]]; then
     # shellcheck disable=SC2029
     ssh $SSH_OPTS "$SSH_USER@$HOST" "mkdir -p ~/.claude/plugins"
-    for f in installed_plugins.json known_marketplaces.json blocklist.json; do
+    for f in installed_plugins.json blocklist.json; do
         if [[ -f "$CLAUDE_DIR/plugins/$f" ]]; then
             rsync -az -e "ssh $SSH_OPTS" \
                 "$CLAUDE_DIR/plugins/$f" \
@@ -127,6 +129,28 @@ rsync_if_exists "$CLAUDE_DIR/agents/" "~/.claude/agents/" "agents/"
 # so installPath points there.
 if [[ -f "$CLAUDE_DIR/plugins/installed_plugins.json" ]]; then
     REMOTE_HOME=$(ssh $SSH_OPTS "$SSH_USER@$HOST" 'echo $HOME')
+
+    # known_marketplaces.json — rewrite installLocation from the local $HOME
+    # to the VM's $HOME. Copying it as-is points the VM at a path that only
+    # exists on the local machine, so Claude Code can't resolve the
+    # marketplace ("cache-miss"), which breaks every plugin from it
+    # (github, fakechat, discord).
+    if [[ -f "$CLAUDE_DIR/plugins/known_marketplaces.json" ]]; then
+        MARKETPLACES_JSON="$(mktemp)"
+        python3 - "$CLAUDE_DIR/plugins/known_marketplaces.json" "$HOME" "$REMOTE_HOME" "$MARKETPLACES_JSON" << 'PYEOF'
+import json, sys
+local_file, local_home, remote_home, json_out = sys.argv[1:5]
+data = json.load(open(local_file))
+for entry in data.values():
+    loc = entry.get("installLocation", "")
+    if loc.startswith(local_home):
+        entry["installLocation"] = remote_home + loc[len(local_home):]
+json.dump(data, open(json_out, "w"), indent=2)
+PYEOF
+        cat "$MARKETPLACES_JSON" | ssh $SSH_OPTS "$SSH_USER@$HOST" "cat > ~/.claude/plugins/known_marketplaces.json"
+        rm -f "$MARKETPLACES_JSON"
+        info "  ✓ plugins/known_marketplaces.json (installLocation rewritten for VM \$HOME)"
+    fi
 
     # Discord/fakechat plugins run via `bun run --cwd <plugin> start`.
     # shellcheck disable=SC2029

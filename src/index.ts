@@ -9,6 +9,7 @@ import { ProxyService } from './proxy-service';
 import type { AnalyticsContext } from './analytics';
 import { logAnalytics, hashClientIp, estimateCostUsd, querySummary } from './analytics';
 import { getDashboardHtml } from './dashboard';
+import { getSessionsHtml } from './sessions-ui';
 import { handleDiscordInteraction } from './discord/interactions';
 import { handleOpsDiscordInteraction } from './discord/opsInteractions';
 import { classifyRequest, hasRetryHeader } from './token-accounting';
@@ -359,10 +360,12 @@ export default {
 		// These paths are intentionally unauthenticated:
 		//   /health              — plain reachability probe, no sensitive data
 		//   /discord/*           — Discord authenticates via ed25519 signature, not PROXY_TOKEN
+		//   GET /sessions        — serves static HTML only; all API calls under /sessions/* require auth
 		const skipAuth =
 			pathname === '/health' ||
 			pathname === '/discord/interactions' ||
-			pathname === '/discord/ops/interactions';
+			pathname === '/discord/ops/interactions' ||
+			(method === 'GET' && pathname === '/sessions');
 		const authError = skipAuth ? null : checkAuth(request, env);
 		if (authError) return authError;
 
@@ -466,6 +469,44 @@ export default {
 						body: request.body,
 					}));
 					response = r;
+				}
+
+			// ── Sessions web UI ───────────────────────────────────────────────
+			// GET /sessions        — dashboard HTML (unauthenticated; API calls below require token)
+			// POST /sessions/list  — list active cproxy_* tmux sessions on the computeengine daemon
+			// POST /sessions/capture — capture terminal output from a session
+			// POST /sessions/send    — send keystrokes to a session
+			// POST /sessions/kill    — kill a session
+			} else if (method === 'GET' && pathname === '/sessions') {
+				response = new Response(getSessionsHtml(), {
+					headers: { 'Content-Type': 'text/html; charset=utf-8', 'x-request-id': requestId },
+				});
+			} else if (method === 'POST' && pathname.startsWith('/sessions/')) {
+				const action = pathname.slice('/sessions/'.length);
+				const frameTypeMap: Record<string, string> = {
+					list:    'compute_list_sessions',
+					capture: 'compute_capture_session',
+					send:    'compute_send_text',
+					kill:    'compute_kill_session',
+				};
+				const frameType = frameTypeMap[action];
+				if (!frameType) {
+					response = jsonError(404, 'not_found', `Unknown sessions action: ${action}`, requestId);
+				} else if (!env.LAUNCHER_DO) {
+					response = jsonError(503, 'api_error', 'LAUNCHER_DO not configured', requestId);
+				} else {
+					const body = (await request.json()) as Record<string, unknown>;
+					console.log(JSON.stringify({
+						event: 'sessions_action', requestId, action,
+						session: body.session ?? null, ts: timestamp,
+					}));
+					const id = env.LAUNCHER_DO.idFromName('global');
+					const stub = env.LAUNCHER_DO.get(id);
+					response = await stub.fetch(new Request(new URL('/compute-request', request.url), {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ frame_type: frameType, ...body }),
+					}));
 				}
 
 			} else {

@@ -33,14 +33,21 @@
  *
  * ── Endpoints ─────────────────────────────────────────────────────────────────
  *
- *  WS  /ws          Daemon WebSocket upgrade (auth handled in the Worker).
- *  POST /store      { ...config }  →  { token: string }  (expires 10 min, SQLite-backed)
- *  POST /dispatch   { token } or { command, session_id? }  →  { ok, sent, connected }
- *  GET  /status     →  { connected_daemons, pending_configs }
+ *  WS  /ws               Daemon WebSocket upgrade (auth handled in the Worker).
+ *  POST /store           { ...config }  →  { token: string }  (expires 10 min, SQLite-backed)
+ *  POST /dispatch        { token } or { command, session_id? }  →  { ok, sent, connected }
+ *  POST /compute-request { frame_type, session?, text? }  →  daemon result (request/response)
+ *  GET  /status          →  { connected_daemons, pending_configs }
  */
 
 export class LauncherDO {
 	private readonly ctx: DurableObjectState;
+
+	// In-flight compute_* requests: request_id → resolver.
+	// Lives in memory only while a fetch() is actively waiting on the response.
+	// Safe because: (a) the DO cannot hibernate while fetch() is awaiting, and
+	// (b) webSocketMessage fires cooperatively while fetch() is suspended.
+	private readonly pendingRequests = new Map<string, (v: unknown) => void>();
 
 	constructor(state: DurableObjectState, _env: unknown) {
 		this.ctx = state;
@@ -115,6 +122,60 @@ export class LauncherDO {
 			return this.broadcast(JSON.stringify(payload), payload as { target?: string; mode?: string });
 		}
 
+		// ── Compute request: send frame to computeengine daemon, await response ─
+		// Uses an in-memory Map to correlate request_id across fetch()/webSocketMessage().
+		// webSocketMessage() can run cooperatively while fetch() is suspended at await.
+		if (path === 'compute-request' && request.method === 'POST') {
+			const body = (await request.json()) as Record<string, unknown>;
+
+			// Find sockets that sent a hello frame announcing target=computeengine
+			const sockets = this.ctx.getWebSockets();
+			const ceSockets = sockets.filter((ws) => {
+				try {
+					const att = ws.deserializeAttachment() as { target?: string } | null;
+					return att?.target === 'computeengine';
+				} catch {
+					return false;
+				}
+			});
+
+			if (ceSockets.length === 0) {
+				return Response.json(
+					{ ok: false, error: 'No computeengine daemon connected' },
+					{ status: 503 },
+				);
+			}
+
+			const requestId = crypto.randomUUID();
+			const frame = JSON.stringify({ ...body, request_id: requestId, target: 'computeengine' });
+
+			// Register resolver before sending — avoids a race if response is instant
+			const resultPromise = new Promise<unknown>((resolve) => {
+				this.pendingRequests.set(requestId, resolve);
+			});
+
+			try {
+				ceSockets[0].send(frame);
+			} catch (err) {
+				this.pendingRequests.delete(requestId);
+				console.error('[LauncherDO] compute-request send failed:', err);
+				return Response.json({ ok: false, error: 'Failed to send frame to daemon' }, { status: 502 });
+			}
+
+			// Wait up to 10 s for the daemon to respond via webSocketMessage
+			const timeoutPromise = new Promise<null>((resolve) =>
+				setTimeout(() => resolve(null), 10_000),
+			);
+			const result = await Promise.race([resultPromise, timeoutPromise]);
+
+			if (result === null) {
+				this.pendingRequests.delete(requestId);
+				return Response.json({ ok: false, error: 'Daemon response timeout' }, { status: 504 });
+			}
+
+			return Response.json(result);
+		}
+
 		// ── Status ─────────────────────────────────────────────────────────────
 		if (path === 'status') {
 			const sockets = this.ctx.getWebSockets();
@@ -138,9 +199,33 @@ export class LauncherDO {
 	// The Cloudflare runtime calls these when a message/close/error fires,
 	// even if the DO was hibernating between events.
 
-	webSocketMessage(_ws: WebSocket, message: string | ArrayBuffer): void {
-		// Daemons send ACK / NACK JSON frames after attempting to launch
+	webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
 		const text = typeof message === 'string' ? message : '(binary)';
+
+		try {
+			const msg = JSON.parse(text) as Record<string, unknown>;
+
+			// Hello frame: daemon announces its target so we can route compute_* to it
+			if (msg.type === 'hello' && typeof msg.target === 'string') {
+				ws.serializeAttachment({ target: msg.target });
+				console.log(`[LauncherDO] daemon hello: target=${msg.target}`);
+				return;
+			}
+
+			// Compute response: resolve the pending fetch() that sent this request
+			if (typeof msg.request_id === 'string') {
+				const resolve = this.pendingRequests.get(msg.request_id);
+				if (resolve) {
+					this.pendingRequests.delete(msg.request_id);
+					resolve(msg);
+					return;
+				}
+			}
+		} catch {
+			// Not JSON — fall through to plain ACK log
+		}
+
+		// Regular launch ACK/NACK
 		console.log('[LauncherDO] daemon ACK:', text);
 	}
 
