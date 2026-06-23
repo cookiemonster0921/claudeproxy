@@ -279,6 +279,20 @@ def _extract_channel_id(command: str) -> str:
     return m.group(1) if m else ""
 
 
+def _has_claude_sessions(project_dir: str) -> bool:
+    """Return True if Claude has stored session files for this project directory.
+
+    Claude encodes the project path as the directory name under ~/.claude/projects/
+    by stripping the leading slash and replacing remaining slashes with hyphens.
+    Example: /Users/vincent/projects/discord-123 → -Users-vincent-projects-discord-123
+    """
+    encoded = project_dir.lstrip("/").replace("/", "-")
+    sessions_dir = Path.home() / ".claude" / "projects" / encoded
+    if not sessions_dir.exists():
+        return False
+    return any(sessions_dir.glob("*.jsonl"))
+
+
 def _to_wsl_path(windows_path: str) -> Optional[str]:
     """
     Convert a Windows absolute path to its WSL /mnt/... equivalent.
@@ -748,11 +762,15 @@ async def handle_message(raw: str, ws, cfg: dict) -> None:
         )
         Path(_project_dir).mkdir(parents=True, exist_ok=True)
         command = f"export LAUNCH_DIR={shlex.quote(_project_dir)}\n\n" + command
-        if _entry.get("has_prior_session"):
+        if _entry.get("has_prior_session") and _has_claude_sessions(_project_dir):
             command = command + " --continue"
             log.info("Resuming session for channel=%s in %s", _channel_id, _project_dir)
         else:
-            log.info("New session for channel=%s in %s", _channel_id, _project_dir)
+            if _entry.get("has_prior_session"):
+                # Prior session on another machine — no local session files here yet.
+                log.info("No local session files for channel=%s; starting fresh in %s", _channel_id, _project_dir)
+            else:
+                log.info("New session for channel=%s in %s", _channel_id, _project_dir)
 
     try:
         result = launch(command, mode=mode, terminal=cfg["terminal"], session_id=session_id)
