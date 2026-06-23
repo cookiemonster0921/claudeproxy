@@ -70,6 +70,10 @@ const commands = [
 		description: 'Launch a Claude Code Discord session on a configured local runtime',
 	},
 	{
+		name: 'macstudio',
+		description: 'Launch a Claude Code Discord session on Mac Studio (always-on, tmux background)',
+	},
+	{
 		name: 'help',
 		description: 'Show the operations bot help panel',
 	},

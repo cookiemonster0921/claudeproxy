@@ -5,7 +5,7 @@ import type { DiscordInteraction } from './discordTypes';
 import { verifyDiscordRequest } from './verifySignature';
 
 const EPHEMERAL = 64;
-const LAUNCH_COMMANDS = new Set(['cloudshell', 'computeengine', 'oracle', 'cloudrunjobs', 'modal', 'northflank', 'local']);
+const LAUNCH_COMMANDS = new Set(['cloudshell', 'computeengine', 'oracle', 'cloudrunjobs', 'modal', 'northflank', 'local', 'macstudio']);
 
 // ── LauncherDO helpers ────────────────────────────────────────────────────────
 
@@ -189,6 +189,29 @@ const RUNTIME_OPS_INFO: Record<string, { noDaemon: string[]; monitor: string[] }
 			'```',
 		],
 	},
+	macstudio: {
+		noDaemon: [
+			'The `discord_session_launcher.py` daemon on your **Mac Studio** is not connected.',
+			'Start it (or ensure launchd is running it):',
+			'```sh',
+			'LAUNCHER_TARGET=macstudio python3 discord_session_launcher.py',
+			'```',
+			'Or load the launchd service if configured:',
+			'```sh',
+			'launchctl start ai.jortelligence.session-launcher',
+			'```',
+		],
+		monitor: [
+			'A background tmux session is starting on your **Mac Studio**.',
+			'',
+			'Monitor it on the Mac Studio:',
+			'```sh',
+			'tmux ls                            # list sessions',
+			'tmux attach -t cproxy_<id>         # view the live session (Ctrl-b d to detach)',
+			'tail -f ~/.claude/discord-sessions/logs/<id>.log',
+			'```',
+		],
+	},
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -248,6 +271,7 @@ function helpText(): string {
 		'`/oracle` — launch on an **Oracle Cloud (OCI)** VM (tmux, background).',
 		'`/modal` — launch inside a **Modal** always-on container (`modal deploy`).',
 		'`/northflank` — launch inside a **Northflank** persistent service.',
+		'`/macstudio` — launch on your **Mac Studio** (tmux, background, always-on).',
 		'`/cloudshell` — Google Cloud Shell (stub, not yet implemented).',
 		'`/cloudrunjobs` — Cloud Run Jobs (stub, not yet implemented).',
 		'`/help` — show this guide.',
@@ -363,7 +387,7 @@ export async function handleOpsDiscordInteraction(
 			// 'oracle'        → daemon on an Oracle Cloud Infrastructure VM (tmux, background)
 			// 'modal'         → daemon inside a Modal web_server container (always-on)
 			// 'northflank'    → daemon inside a Northflank persistent deployment service
-			if (runtime === 'local' || runtime === 'computeengine' || runtime === 'oracle' || runtime === 'modal' || runtime === 'northflank') {
+			if (runtime === 'local' || runtime === 'computeengine' || runtime === 'oracle' || runtime === 'modal' || runtime === 'northflank' || runtime === 'macstudio') {
 				const channelId = interaction.channel_id ?? '';
 				const command = buildCproxyCommand({
 					channelId,
@@ -411,6 +435,7 @@ export async function handleOpsDiscordInteraction(
 					oracle:        'a background tmux session on the **Oracle Cloud (OCI) VM**',
 					modal:         'a tmux session inside the **Modal container** (`modal deploy`)',
 					northflank:    'a tmux session inside the **Northflank deployment service**',
+					macstudio:     'a background tmux session on your **Mac Studio**',
 				};
 				const DAEMON_HINT: Record<string, string> = {
 					local:         'The `discord_session_launcher.py` daemon must be running on your local machine.',
@@ -418,6 +443,7 @@ export async function handleOpsDiscordInteraction(
 					oracle:        'The `discord_session_launcher.py` daemon must be running on the OCI VM (`LAUNCHER_TARGET=oracle`).',
 					modal:         'The Modal app must be deployed: `modal deploy scripts/modal/modal_launcher.py` (`LAUNCHER_TARGET=modal`).',
 					northflank:    'The Northflank service must be running: `./scripts/northflank/setup.sh` (`LAUNCHER_TARGET=northflank`).',
+					macstudio:     'The `discord_session_launcher.py` daemon must be running on your Mac Studio (`LAUNCHER_TARGET=macstudio`).',
 				};
 				const locationDesc = LOCATION[runtime] ?? `a session on \`${runtime}\``;
 				const daemonHint   = DAEMON_HINT[runtime] ?? `The \`${runtime}\` daemon must be running.`;
