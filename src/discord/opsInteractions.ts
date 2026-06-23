@@ -205,14 +205,10 @@ const RUNTIME_OPS_INFO: Record<string, { noDaemon: string[]; monitor: string[] }
 			'```',
 		],
 		monitor: [
-			'A background tmux session is starting on your **Mac Studio**.',
+			'A new terminal tab is opening on your **Mac Studio**.',
 			'',
-			'Monitor it on the Mac Studio:',
-			'```sh',
-			'tmux ls                            # list sessions',
-			'tmux attach -t cproxy_<id>         # view the live session (Ctrl-b d to detach)',
-			'tail -f ~/.claude/discord-sessions/logs/<id>.log',
-			'```',
+			'If this is a **new channel directory**, a one-time trust dialog will appear — select **Yes, I accept**.',
+			'After that, the session starts and responds to Discord messages.',
 		],
 	},
 };
@@ -392,15 +388,17 @@ export async function handleOpsDiscordInteraction(
 			// 'northflank'    → daemon inside a Northflank persistent deployment service
 			if (runtime === 'local' || runtime === 'computeengine' || runtime === 'oracle' || runtime === 'modal' || runtime === 'northflank' || runtime === 'macstudio') {
 				const channelId = interaction.channel_id ?? '';
+				// macstudio is a desktop Mac — open visible terminal tabs like local,
+				// not tmux background. Trust dialogs appear once per new directory.
+				const isDesktop = runtime === 'local' || runtime === 'macstudio';
 				const command = buildCproxyCommand({
 					channelId,
 					allowedUserIds,
 					modelId: model.id,
-					headless: runtime !== 'local',
+					headless: !isDesktop,
 				});
 				const sessionId = crypto.randomUUID().slice(0, 8);
-				// local opens a GUI window; VM has no display so use background tmux
-				const mode = runtime === 'local' ? 'terminal' : 'background';
+				const mode = isDesktop ? 'terminal' : 'background';
 
 				const stored = await launcherDo(env, 'store', {
 					command,
@@ -438,7 +436,7 @@ export async function handleOpsDiscordInteraction(
 					oracle:        'a background tmux session on the **Oracle Cloud (OCI) VM**',
 					modal:         'a tmux session inside the **Modal container** (`modal deploy`)',
 					northflank:    'a tmux session inside the **Northflank deployment service**',
-					macstudio:     'a background tmux session on your **Mac Studio**',
+					macstudio:     'a new terminal tab on your **Mac Studio**',
 				};
 				const DAEMON_HINT: Record<string, string> = {
 					local:         'The `discord_session_launcher.py` daemon must be running on your local machine.',
