@@ -566,10 +566,20 @@ on)
 	# docker/discord-plugin/server.ts is the single source of truth.
 	# When the Discord plugin is in use, push it to the local Claude plugin cache
 	# before launch so the running plugin matches what would be in a Docker image.
+	#
+	# Trigger detection (either is sufficient):
+	#   1. Legacy: --channels plugin:discord@... in CLAUDE_ARGS
+	#   2. Modern: DISCORD_STATE_DIR env var set (ops-bot launch path; --channels removed
+	#              because Anthropic gates the hosted plugin behind subscriptions)
+	#   3. --discord-channel arg present (always implies a Discord session)
 	_discord_in_args=false
-	for _a in "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"; do
-		[[ "$_a" == *"plugin:discord"* ]] && _discord_in_args=true && break
-	done
+	[[ -n "${DISCORD_STATE_DIR:-}" ]] && _discord_in_args=true
+	[[ -n "${DISCORD_CHANNEL_IDS:-}" ]] && _discord_in_args=true
+	if [[ "$_discord_in_args" == false ]]; then
+		for _a in "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"; do
+			[[ "$_a" == *"plugin:discord"* ]] && _discord_in_args=true && break
+		done
+	fi
 	if [[ "$_discord_in_args" == true ]]; then
 		"$SCRIPT_DIR/scripts/sync-discord-plugin.sh" 2>/dev/null || true
 
@@ -1005,6 +1015,67 @@ status)
 	fi
 	;;
 
+setup-discord-mcp)
+	# ── Register the local Discord MCP server in ~/.claude/settings.json ──────
+	# Anthropic gates --channels plugin:discord@claude-plugins-official behind
+	# subscriptions (Claude Code v2.1.186+). This command configures the local
+	# server.ts as an mcpServers entry so it starts automatically instead.
+	#
+	# Run once on each machine (Mac Studio, GCE, etc.) after cloning the repo.
+	SETTINGS_FILE="$HOME/.claude/settings.json"
+	PLUGIN_SERVER="$SCRIPT_DIR/docker/discord-plugin/server.ts"
+
+	if [[ ! -f "$PLUGIN_SERVER" ]]; then
+		echo "ERROR: discord-plugin server not found at $PLUGIN_SERVER" >&2
+		exit 1
+	fi
+
+	# Ensure bun is installed (the plugin runs on Bun)
+	if ! command -v bun &>/dev/null; then
+		echo "ERROR: 'bun' is required to run the discord-plugin server." >&2
+		echo "       Install it: curl -fsSL https://bun.sh/install | bash" >&2
+		exit 1
+	fi
+
+	BUN_PATH="$(command -v bun)"
+
+	echo "Configuring Discord MCP server in $SETTINGS_FILE"
+	echo "  server : $PLUGIN_SERVER"
+	echo "  runtime: $BUN_PATH"
+	echo ""
+
+	python3 - "$SETTINGS_FILE" "$BUN_PATH" "$PLUGIN_SERVER" << 'PYEOF'
+import json, os, sys
+
+settings_file, bun_path, server_path = sys.argv[1], sys.argv[2], sys.argv[3]
+
+# Load or create settings
+if os.path.exists(settings_file):
+    with open(settings_file) as f:
+        settings = json.load(f)
+else:
+    os.makedirs(os.path.dirname(settings_file), exist_ok=True)
+    settings = {}
+
+# Add/overwrite the discord MCP server entry
+mcp_servers = settings.setdefault("mcpServers", {})
+mcp_servers["discord"] = {
+    "command": bun_path,
+    "args": ["run", server_path],
+}
+
+with open(settings_file, "w") as f:
+    json.dump(settings, f, indent=2)
+    f.write("\n")
+
+print("  ✓ mcpServers.discord added to", settings_file)
+print("")
+print("  The discord MCP server will now start automatically with every Claude session.")
+print("  DISCORD_STATE_DIR (set by the ops-bot launch command) controls which")
+print("  channel's state directory is used for each session.")
+PYEOF
+	;;
+
 *)
 	cat >&2 << 'EOF'
 Usage: ./claude-proxy.sh [command] [backend] [provider]
@@ -1015,6 +1086,7 @@ Commands:
   stop                      Stop the background local proxy
   log                       Stream live formatted request logs (run in a second terminal)
   status                    Show proxy status, active backend, model, and recent requests
+  setup-discord-mcp         Register the local Discord MCP server in ~/.claude/settings.json
 
 Backends (for "on"):
   local           Run wrangler dev locally (http://localhost:8787)
@@ -1055,15 +1127,12 @@ Examples:
   # Skip model picker (prod — --model passed through to claude):
   ./claude-proxy.sh on prod --model google_ai/gemini-2.5-flash
 
-  # Discord plugin — pre-set channel + users before starting:
+  # Discord plugin — register local MCP server once per machine, then launch:
+  ./claude-proxy.sh setup-discord-mcp         # one-time setup on each machine
   ./claude-proxy.sh on prod \
-      --channels plugin:discord@claude-plugins-official \
       --discord-channel 1234567890123456789 \
       --discord-users 111222333444,555666777888 \
       --discord-dms allowlist
-
-  # Use saved credentials from discord:configure skill (no discord flags needed):
-  ./claude-proxy.sh on prod --channels plugin:discord@claude-plugins-official
   ./claude-proxy.sh stop                      # stop the local proxy
 
 Prod setup (one-time):

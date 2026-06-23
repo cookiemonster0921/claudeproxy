@@ -63,10 +63,13 @@ function buildCproxyCommand(opts: {
 	// session A drops all inbound messages (they fail its local access check).
 	const stateDir = `~/.claude/discord-sessions/${opts.channelId}`;
 	// Escape for safe shell embedding (no untrusted input here, but be explicit)
+	// --channels plugin:discord@claude-plugins-official is intentionally omitted:
+	// Anthropic gates the hosted channel plugin behind subscriptions (v2.1.186+).
+	// The local MCP server (docker/discord-plugin/server.ts) must be configured
+	// in ~/.claude/settings.json mcpServers on each target machine instead.
 	const parts = [
 		`DISCORD_STATE_DIR=${stateDir}`,
 		'claude-proxy.sh on prod',
-		`--channels "plugin:discord@claude-plugins-official"`,
 		`--discord-channel ${opts.channelId}`,
 	];
 	if (users) parts.push(`--discord-users ${users}`);
