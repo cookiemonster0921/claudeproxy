@@ -84,6 +84,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shlex
 import signal
 import subprocess
@@ -244,6 +245,38 @@ def _write_launch_script(
             pass
         raise
     return path
+
+
+# ── Per-channel session store ──────────────────────────────────────────────────
+# Persists {channel_id: {project_dir, has_prior_session}} to disk so that
+# subsequent launches for the same Discord channel resume in the same folder
+# and Claude can continue the previous conversation with --continue.
+
+_CHANNEL_STORE_PATH = Path.home() / ".claude" / "discord-sessions" / "channel-store.json"
+
+
+def _load_channel_store() -> dict:
+    if _CHANNEL_STORE_PATH.exists():
+        try:
+            with open(_CHANNEL_STORE_PATH) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_channel_store(store: dict) -> None:
+    _CHANNEL_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = str(_CHANNEL_STORE_PATH) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(store, f, indent=2)
+    os.replace(tmp, _CHANNEL_STORE_PATH)
+
+
+def _extract_channel_id(command: str) -> str:
+    """Return the --discord-channel value from the command string, or ''."""
+    m = re.search(r'--discord-channel(?:=|\s+)(\S+)', command)
+    return m.group(1) if m else ""
 
 
 def _to_wsl_path(windows_path: str) -> Optional[str]:
@@ -701,8 +734,35 @@ async def handle_message(raw: str, ws, cfg: dict) -> None:
     if router_exports:
         command = "\n".join(router_exports) + "\n\n" + command
 
+    # ── Per-channel project folder + session continuity ──────────────────────
+    # Each Discord channel gets its own working directory so Claude sessions
+    # are isolated from one another and from the claude-proxy repo directory.
+    # On re-launch for the same channel, --continue resumes the last session.
+    _channel_id = _extract_channel_id(command)
+    _project_dir = ""
+    if _channel_id:
+        _store = _load_channel_store()
+        _entry = _store.get(_channel_id, {})
+        _project_dir = _entry.get("project_dir") or str(
+            Path.home() / "projects" / f"discord-{_channel_id}"
+        )
+        Path(_project_dir).mkdir(parents=True, exist_ok=True)
+        command = f"export LAUNCH_DIR={shlex.quote(_project_dir)}\n\n" + command
+        if _entry.get("has_prior_session"):
+            command = command + " --continue"
+            log.info("Resuming session for channel=%s in %s", _channel_id, _project_dir)
+        else:
+            log.info("New session for channel=%s in %s", _channel_id, _project_dir)
+
     try:
         result = launch(command, mode=mode, terminal=cfg["terminal"], session_id=session_id)
+
+        # Persist that this channel now has a prior session so the next launch resumes it.
+        if _channel_id:
+            _store = _load_channel_store()
+            _store[_channel_id] = {"project_dir": _project_dir, "has_prior_session": True}
+            _save_channel_store(_store)
+
         ack = json.dumps({
             "status": "launched",
             "mode":   mode,

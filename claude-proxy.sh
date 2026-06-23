@@ -18,8 +18,10 @@
 
 set -euo pipefail
 
-# Save the directory where the user ran this command — Claude Code will open here.
-LAUNCH_DIR="$PWD"
+# Save the directory where Claude Code will open.
+# Honour a pre-set LAUNCH_DIR env var (set by the launcher daemon for per-channel
+# project folders); fall back to $PWD when running the script manually.
+LAUNCH_DIR="${LAUNCH_DIR:-$PWD}"
 
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-8787}"
