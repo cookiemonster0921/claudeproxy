@@ -13,6 +13,7 @@ import {
 	mergeProviderUsage,
 	type ProviderUsage,
 } from './token-accounting';
+import { extractWebSearchTools, runWebSearchLoop } from './web-search';
 
 // ---------------------------------------------------------------------------
 // Snapshot extraction helpers — first N chars only, never full content
@@ -243,6 +244,11 @@ export class ProxyService {
 			throw new ProxyError(400, 'invalid_request_error', 'messages array must not be empty');
 		}
 
+		// Intercept server-side web_search tools for non-Anthropic providers.
+		// When SEARXNG_URL is configured, web_search is handled by the proxy via SearXNG.
+		const searxngUrl = this.env.SEARXNG_URL;
+		const hasWebSearch = searxngUrl ? extractWebSearchTools(body) : false;
+
 		const routed = this.router.resolveRequest(body);
 		const provider = createProvider(routed.resolved.providerId, this.settings, this.env);
 		provider.preflight(body);
@@ -273,9 +279,41 @@ export class ProxyService {
 				stream,
 				inputTokens,
 				toolCount: body.tools?.length ?? 0,
+				webSearch: hasWebSearch,
 				ts: new Date().toISOString(),
 			}),
 		);
+
+		// Web search agent loop: buffer internally, perform SearXNG searches,
+		// re-prompt until the model produces a final response without web_search calls.
+		if (hasWebSearch && searxngUrl) {
+			const finalChunks = await runWebSearchLoop(
+				body,
+				routed,
+				provider,
+				() => createProvider(routed.resolved.providerId, this.settings, this.env),
+				() => this.rateLimiter.acquire(),
+				searxngUrl,
+				requestId,
+				inputTokens,
+			);
+
+			if (!stream) {
+				const parsed = parseAnthropicSSE(finalChunks.join(''), body.model, inputTokens);
+				return jsonResponse(parsed.message, requestId);
+			}
+
+			// Re-emit buffered SSE as streaming response
+			return new Response(finalChunks.join(''), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'text/event-stream; charset=utf-8',
+					'Cache-Control': 'no-cache',
+					Connection: 'keep-alive',
+					'x-request-id': requestId,
+				},
+			});
+		}
 
 		if (!stream) {
 			// Non-streaming: buffer all SSE, parse into JSON response
