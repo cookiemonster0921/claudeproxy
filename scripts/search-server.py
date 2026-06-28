@@ -6,14 +6,14 @@ No Docker, no API key, no configuration.
 
 Usage:
     pip3 install duckduckgo-search
-    python3 scripts/search-server.py              # default: 127.0.0.1:8888
+    python3 scripts/search-server.py              # default: 127.0.0.1:8890
     python3 scripts/search-server.py --port 9999   # custom port
 
 API (same as SearXNG):
     GET /search?q=query&format=json
     → { "results": [{ "url": "...", "title": "...", "content": "..." }, ...] }
 
-Set SEARXNG_URL=http://127.0.0.1:8888 in .dev.vars to enable in the proxy.
+Set SEARXNG_URL=http://127.0.0.1:8890 in .dev.vars to enable in the proxy.
 """
 
 import argparse
@@ -86,7 +86,7 @@ class SearchHandler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description="Lightweight web search server")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8888)
+    parser.add_argument("--port", type=int, default=8890)
     args = parser.parse_args()
 
     server = HTTPServer((args.host, args.port), SearchHandler)

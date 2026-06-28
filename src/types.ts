@@ -58,7 +58,7 @@ export interface Env {
 	OLLAMA_DEFAULT_MODEL?: string; // default llama3.2
 	ENABLE_OLLAMA_PROVIDER?: string; // 'false' to disable; default true
 	// Web search (SearXNG)
-	SEARXNG_URL?: string; // e.g. http://127.0.0.1:8888 — enables web_search tool for non-Anthropic providers
+	SEARXNG_URL?: string; // e.g. http://127.0.0.1:8890 — enables web_search tool for non-Anthropic providers
 	// Local session launcher relay (LauncherDO)
 	LAUNCHER_DO?: DurableObjectNamespace; // LauncherDO — relays launch commands to local daemons
 	// External service keys (used by cloud agent tools)
