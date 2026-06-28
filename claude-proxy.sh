@@ -181,7 +181,7 @@ current_backend() {
 	if [[ -f "$BACKENDFILE" ]]; then cat "$BACKENDFILE"; else echo "local"; fi
 }
 
-# pick_backend — show local/prod choice on stderr, echo "local" or "prod" on stdout
+# pick_backend — show local/prod/ollama choice on stderr, echo backend id on stdout
 pick_backend() {
 	local prod_label
 	if [[ -n "$WORKER_URL" ]]; then
@@ -190,21 +190,78 @@ pick_backend() {
 		prod_label="Production  — deployed Worker (will prompt for URL)"
 	fi
 
+	local ollama_available=false
+	command -v ollama > /dev/null 2>&1 && ollama_available=true
+
 	echo "" >&2
 	echo "  Select backend:" >&2
 	echo "  1)  Local       — wrangler dev ($PROXY_URL)" >&2
 	echo "  2)  $prod_label" >&2
+	if [[ "$ollama_available" == "true" ]]; then
+		echo "  3)  Ollama      — local models, no cloud API key needed" >&2
+	fi
 	echo "" >&2
+
+	local max_choice=2
+	[[ "$ollama_available" == "true" ]] && max_choice=3
 
 	local choice
 	while true; do
-		read -rp "  Backend [1-2]: " choice < /dev/tty
+		read -rp "  Backend [1-${max_choice}]: " choice < /dev/tty
 		case "$choice" in
-			1) echo "local"; return ;;
-			2) echo "prod";  return ;;
-			*) echo "  Please enter 1 or 2." >&2 ;;
+			1) echo "local";  return ;;
+			2) echo "prod";   return ;;
+			3) [[ "$ollama_available" == "true" ]] && echo "ollama" && return ;;
 		esac
+		echo "  Please enter a number between 1 and ${max_choice}." >&2
 	done
+}
+
+# pick_ollama_model — query running Ollama daemon for pulled models, echo "name|name" items on stdout
+pick_ollama_model() {
+	local ollama_url="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
+	local models_json
+	models_json=$(curl -sf "${ollama_url}/api/tags" 2>/dev/null || echo "")
+
+	if [[ -z "$models_json" ]]; then
+		echo "" >&2
+		echo "  ⚠  Could not reach Ollama at ${ollama_url}" >&2
+		echo "     Start it with: ollama serve" >&2
+		echo "" >&2
+		exit 1
+	fi
+
+	local model_items
+	model_items=$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+models = data.get('models', [])
+if not models:
+    sys.exit(1)
+for m in models:
+    name = m.get('name', '')
+    size = m.get('size', 0)
+    size_label = f'{size / 1e9:.1f} GB' if size else ''
+    label = f'{name}  ({size_label})' if size_label else name
+    print(f'{label}|{name}')
+" <<< "$models_json" 2>/dev/null || echo "")
+
+	if [[ -z "$model_items" ]]; then
+		echo "" >&2
+		echo "  ⚠  No Ollama models found. Pull one first:" >&2
+		echo "       ollama pull llama3.2" >&2
+		echo "       ollama pull qwen3:8b" >&2
+		echo "" >&2
+		exit 1
+	fi
+
+	local items=()
+	while IFS= read -r line; do
+		[[ -n "$line" ]] && items+=("$line")
+	done <<< "$model_items"
+
+	echo "  Ollama models (locally pulled):" >&2
+	pick_from_menu "Model" "${items[@]}"
 }
 
 user_settings_conflict_with_gateway() {
@@ -328,6 +385,10 @@ explain_model() {
 			for line in "${WORKERS_AI_LABEL[@]}"; do
 				echo "    $line"
 			done
+			;;
+		ollama)
+			echo "  Backend: Ollama (local) — ${model_var#ollama/}"
+			echo "  Ensure Ollama is running: ollama serve"
 			;;
 		nvidia|openrouter|cloudflare|google_ai)
 			echo "  Backend: $model_var"
@@ -501,6 +562,17 @@ on)
 			ARG3="${3:-}"
 			if [[ -n "$ARG3" && "$ARG3" != -* ]]; then
 				MODEL_VAR="$ARG3"
+				CLAUDE_ARG_START=4
+			fi
+			;;
+		ollama)
+			# Shortcut: cproxy on ollama [model-name]
+			BACKEND="ollama"
+			PROVIDER="ollama"
+			CLAUDE_ARG_START=3
+			ARG3="${3:-}"
+			if [[ -n "$ARG3" && "$ARG3" != -* ]]; then
+				MODEL_VAR="ollama/${ARG3}"
 				CLAUDE_ARG_START=4
 			fi
 			;;
@@ -690,6 +762,70 @@ PYEOF
 	fi
 
 	# ------------------------------------------------------------------
+	# OLLAMA mode — local wrangler dev, model from running Ollama daemon
+	# ------------------------------------------------------------------
+	if [[ "$BACKEND" == "ollama" ]]; then
+		PROVIDER="ollama"
+
+		# Resolve model: from flag/arg, or query Ollama interactively
+		if [[ -n "$CPROXY_MODEL" && -z "$MODEL_VAR" ]]; then
+			# --model flag: accept "qwen3:8b" or "ollama/qwen3:8b"
+			if [[ "$CPROXY_MODEL" == ollama/* ]]; then
+				MODEL_VAR="$CPROXY_MODEL"
+			else
+				MODEL_VAR="ollama/${CPROXY_MODEL}"
+			fi
+		fi
+		if [[ -z "$MODEL_VAR" ]]; then
+			OLLAMA_NAME="$(pick_ollama_model)"
+			MODEL_VAR="ollama/${OLLAMA_NAME}"
+		fi
+
+		echo ""
+		start_proxy "$MODEL_VAR"
+		echo "local" > "$BACKENDFILE"
+
+		TOKEN=""
+		if [[ -f "$SCRIPT_DIR/.dev.vars" ]]; then
+			TOKEN=$(grep -E '^PROXY_TOKEN=' "$SCRIPT_DIR/.dev.vars" | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'" || true)
+		fi
+		AUTH="${TOKEN:-dev-token}"
+
+		echo ""
+		echo "  Backend: Ollama (local)"
+		echo "  Model:   ${MODEL_VAR#ollama/}"
+		echo ""
+		echo "  ╔═══════════════════════════════════════════════════════════════╗"
+		echo "  ║  Claude Code UI still shows 'Opus 4.7' / 'Sonnet 4.6'.      ║"
+		echo "  ║  Every request is intercepted and routed to Ollama instead.  ║"
+		echo "  ║  Make sure Ollama is running:  ollama serve                  ║"
+		echo "  ╚═══════════════════════════════════════════════════════════════╝"
+		echo ""
+		echo "  Opening Claude Code in: $LAUNCH_DIR"
+		echo ""
+
+		cd "$LAUNCH_DIR"
+		if user_settings_conflict_with_gateway && ! has_setting_sources_arg "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"; then
+			CLAUDE_ARGS=(--setting-sources project,local "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}")
+		fi
+		env \
+			-u CLAUDE_CODE_USE_VERTEX \
+			-u ANTHROPIC_VERTEX_PROJECT_ID \
+			-u ANTHROPIC_VERTEX_BASE_URL \
+			-u CLOUD_ML_REGION \
+			-u CLAUDE_CODE_USE_BEDROCK \
+			-u ANTHROPIC_BEDROCK_BASE_URL \
+			-u CLAUDE_CODE_USE_ANTHROPIC_AWS \
+			-u ANTHROPIC_AWS_BASE_URL \
+			-u ANTHROPIC_API_KEY \
+			ANTHROPIC_BASE_URL="$PROXY_URL" \
+			ANTHROPIC_AUTH_TOKEN="$AUTH" \
+			CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY="1" \
+			claude "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"
+		exit $?
+	fi
+
+	# ------------------------------------------------------------------
 	# PROD mode — point directly at deployed Worker, skip wrangler
 	# ------------------------------------------------------------------
 	if [[ "$BACKEND" == "prod" ]]; then
@@ -871,8 +1007,18 @@ for m in data.get('data', []):
 		PROVIDER="$(pick_provider)"
 	fi
 
+	# Ollama via --provider flag on local backend: pick from live model list
+	if [[ "$PROVIDER" == "ollama" ]]; then
+		if [[ -z "$MODEL_VAR" ]]; then
+			OLLAMA_NAME="$(pick_ollama_model)"
+			MODEL_VAR="ollama/${OLLAMA_NAME}"
+		elif [[ "$MODEL_VAR" != ollama/* ]]; then
+			MODEL_VAR="ollama/${MODEL_VAR}"
+		fi
+	fi
+
 	# Determine model (arg or interactive pick)
-	if [[ -z "$MODEL_VAR" ]]; then
+	if [[ -z "$MODEL_VAR" && "$PROVIDER" != "ollama" ]]; then
 		MODEL_VAR="$(pick_model "$PROVIDER")"
 	fi
 
@@ -1100,7 +1246,7 @@ Providers (for "on local"):
   workers_ai      Workers AI binding      — no external key needed (default)
 
 cproxy flags (consumed here, not forwarded to claude):
-  --provider <name>                 Skip provider picker: nvidia | openrouter | cloudflare | google_ai | workers_ai
+  --provider <name>                 Skip provider picker: nvidia | openrouter | cloudflare | google_ai | workers_ai | ollama
   --model <model-id>                Skip model picker (local: sets wrangler var; prod: pass --model to claude instead)
   --discord-channel <id1,id2,...>   Replace allowed Discord channel IDs in access.json
   --discord-users <id1,id2,...>     Set allowed Discord user IDs (applies globally + per-channel)

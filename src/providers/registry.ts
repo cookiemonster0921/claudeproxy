@@ -15,7 +15,7 @@ const PROVIDER_BASE_URLS: Record<string, string> = {
 	ollama: 'http://localhost:11434/v1',
 };
 
-function buildProviderConfig(providerId: string, settings: Settings, _env: Env): ProviderConfig {
+function buildProviderConfig(providerId: string, settings: Settings, env: Env): ProviderConfig {
 	const apiKeyMap: Record<string, string | undefined> = {
 		nvidia_nim: settings.nvidiaNimApiKey,
 		openrouter: settings.openrouterApiKey,
@@ -23,7 +23,15 @@ function buildProviderConfig(providerId: string, settings: Settings, _env: Env):
 		// lm_studio and ollama use no API key
 	};
 
-	const baseUrl = PROVIDER_BASE_URLS[providerId];
+	let baseUrl = PROVIDER_BASE_URLS[providerId];
+
+	// Allow OLLAMA_BASE_URL env var to override the default Ollama endpoint.
+	// The env var holds the server root (e.g. http://127.0.0.1:11434); we append /v1.
+	if (providerId === 'ollama' && env.OLLAMA_BASE_URL) {
+		const root = env.OLLAMA_BASE_URL.replace(/\/+$/, '');
+		baseUrl = root.endsWith('/v1') ? root : `${root}/v1`;
+	}
+
 	if (!baseUrl) {
 		throw new ProxyError(400, 'invalid_request_error', `Unsupported provider: "${providerId}"`);
 	}

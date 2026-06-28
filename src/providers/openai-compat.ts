@@ -30,6 +30,9 @@ interface BufferedToolCall {
 	args: string;
 }
 
+// Providers that work without an API key (local inference servers)
+const NO_KEY_PROVIDERS = new Set(['ollama', 'lm_studio']);
+
 // Headers added per-provider for routing attribution
 const EXTRA_HEADERS: Record<string, Record<string, string>> = {
 	openrouter: {
@@ -52,7 +55,8 @@ export class OpenAIChatProvider implements BaseProvider {
 	async *streamResponse(routed: RoutedRequest, inputTokens: number, requestId: string): AsyncGenerator<string> {
 		const { body, resolved } = routed;
 
-		if (!this.config.apiKey) {
+		// API key is optional for local providers (ollama, lm_studio)
+		if (!this.config.apiKey && !NO_KEY_PROVIDERS.has(this.providerId)) {
 			throw new ProxyError(
 				401,
 				'authentication_error',
@@ -67,7 +71,7 @@ export class OpenAIChatProvider implements BaseProvider {
 		const resp = await fetch(`${this.config.baseUrl}/chat/completions`, {
 			method: 'POST',
 			headers: {
-				Authorization: `Bearer ${this.config.apiKey}`,
+				...(this.config.apiKey ? { Authorization: `Bearer ${this.config.apiKey}` } : {}),
 				'Content-Type': 'application/json',
 				...(EXTRA_HEADERS[this.providerId] ?? {}),
 			},
