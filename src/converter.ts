@@ -32,8 +32,12 @@ export class AnthropicToOpenAIConverter {
 	static convert(body: MessagesRequest, opts: ConvertOptions): Record<string, unknown> {
 		const messages: OpenAIMessage[] = [];
 
-		const systemText = stringifySystem(body.system);
+		let systemText = stringifySystem(body.system);
 		if (systemText) {
+			// Strip Claude Code's attribution header — it changes every request,
+			// busting the KV cache on local models (Ollama, LM Studio) and causing
+			// up to 90% slower inference. See: unsloth.ai/docs/basics/claude-code
+			systemText = systemText.replace(/^x-anthropic-billing-header:.*\n?/m, '');
 			messages.push({ role: 'system', content: systemText });
 		}
 
