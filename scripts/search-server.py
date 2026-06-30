@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Lightweight web search server — SearXNG-compatible JSON API.
 
-Wraps DuckDuckGo search via the `duckduckgo-search` library.
+Wraps DuckDuckGo search via the `ddgs` library (formerly `duckduckgo-search`,
+which is now an empty deprecation shim that returns zero results).
 No Docker, no API key, no configuration.
 
 Usage:
-    pip3 install duckduckgo-search
+    pip3 install ddgs
     python3 scripts/search-server.py              # default: 127.0.0.1:8890
     python3 scripts/search-server.py --port 9999   # custom port
 
@@ -24,10 +25,10 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 try:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 except ImportError:
     print("Missing dependency. Install with:")
-    print("  pip3 install duckduckgo-search")
+    print("  pip3 install ddgs")
     sys.exit(1)
 
 
