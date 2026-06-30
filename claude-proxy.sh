@@ -434,14 +434,17 @@ start_proxy() {
 
 	echo "  starting wrangler dev server..."
 
-	# Run wrangler in a subshell so the cd doesn't change the caller's working directory.
-	# This is important when cproxy is called from another folder — LAUNCH_DIR stays intact.
+	# CI=true: disable wrangler's interactive terminal UI (spinner, keyboard shortcuts,
+	# terminal capability queries). Without this, wrangler writes VT100 control sequences
+	# to stdout and tries to read from stdin, stalling when run as a background process.
+	# < /dev/null: ensure stdin is definitively not a TTY so nothing can block on reads.
 	if [[ -n "$model_var" && "$model_var" != "workers_ai" ]]; then
-		( cd "$SCRIPT_DIR" && npx wrangler dev --ip "$PROXY_HOST" --port "$PROXY_PORT" \
-			--var "MODEL:${model_var}" > "$LOGFILE" 2>&1 ) &
+		( cd "$SCRIPT_DIR" && CI=true npx wrangler dev --ip "$PROXY_HOST" --port "$PROXY_PORT" \
+			--var "MODEL:${model_var}" --no-open < /dev/null > "$LOGFILE" 2>&1 ) &
 	else
 		# workers_ai — don't override MODEL; proxy defaults to workers_ai
-		( cd "$SCRIPT_DIR" && npx wrangler dev --ip "$PROXY_HOST" --port "$PROXY_PORT" > "$LOGFILE" 2>&1 ) &
+		( cd "$SCRIPT_DIR" && CI=true npx wrangler dev --ip "$PROXY_HOST" --port "$PROXY_PORT" \
+			--no-open < /dev/null > "$LOGFILE" 2>&1 ) &
 	fi
 	echo $! > "$PIDFILE"
 	echo "${model_var:-workers_ai}" > "$MODELFILE"
@@ -767,6 +770,20 @@ PYEOF
 	if [[ "$BACKEND" == "ollama" ]]; then
 		PROVIDER="ollama"
 
+		# Pre-flight: verify Ollama is reachable before doing anything else.
+		# Catches the common case of Ollama not running on this machine and gives
+		# an immediate, clear error rather than letting wrangler start and fail silently.
+		_OLLAMA_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
+		if ! curl -sf "${_OLLAMA_URL}/api/tags" > /dev/null 2>&1; then
+			echo ""
+			echo "  ✗  Ollama is not running at ${_OLLAMA_URL}"
+			echo ""
+			echo "  Start it with:   ollama serve"
+			echo "  Or install from: https://ollama.com"
+			echo ""
+			exit 1
+		fi
+
 		# Resolve model: from flag/arg, or query Ollama interactively
 		if [[ -n "$CPROXY_MODEL" && -z "$MODEL_VAR" ]]; then
 			# --model flag: accept "qwen3:8b" or "ollama/qwen3:8b"
@@ -779,6 +796,17 @@ PYEOF
 		if [[ -z "$MODEL_VAR" ]]; then
 			OLLAMA_NAME="$(pick_ollama_model)"
 			MODEL_VAR="ollama/${OLLAMA_NAME}"
+		fi
+
+		# Verify the selected model is actually loaded in Ollama (not just named)
+		_OLLAMA_MODEL_NAME="${MODEL_VAR#ollama/}"
+		if ! curl -sf "${_OLLAMA_URL}/api/tags" 2>/dev/null \
+			| python3 -c "import json,sys; d=json.loads(sys.stdin.read()); names=[m['name'] for m in d.get('models',[])]; sys.exit(0 if any(n=='${_OLLAMA_MODEL_NAME}' or n.startswith('${_OLLAMA_MODEL_NAME}:') for n in names) else 1)" 2>/dev/null; then
+			echo ""
+			echo "  ⚠  Model '${_OLLAMA_MODEL_NAME}' not found in Ollama."
+			echo "     Pull it first:  ollama pull ${_OLLAMA_MODEL_NAME}"
+			echo ""
+			exit 1
 		fi
 
 		echo ""
@@ -798,7 +826,7 @@ PYEOF
 		echo "  ╔═══════════════════════════════════════════════════════════════╗"
 		echo "  ║  Claude Code UI still shows 'Opus 4.7' / 'Sonnet 4.6'.      ║"
 		echo "  ║  Every request is intercepted and routed to Ollama instead.  ║"
-		echo "  ║  Make sure Ollama is running:  ollama serve                  ║"
+		echo "  ║  No data leaves your machine — fully local inference.        ║"
 		echo "  ╚═══════════════════════════════════════════════════════════════╝"
 		echo ""
 		echo "  Opening Claude Code in: $LAUNCH_DIR"
