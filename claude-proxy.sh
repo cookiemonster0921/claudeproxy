@@ -440,11 +440,11 @@ start_proxy() {
 	# < /dev/null: ensure stdin is definitively not a TTY so nothing can block on reads.
 	if [[ -n "$model_var" && "$model_var" != "workers_ai" ]]; then
 		( cd "$SCRIPT_DIR" && CI=true npx wrangler dev --ip "$PROXY_HOST" --port "$PROXY_PORT" \
-			--var "MODEL:${model_var}" --no-open < /dev/null > "$LOGFILE" 2>&1 ) &
+			--var "MODEL:${model_var}" < /dev/null > "$LOGFILE" 2>&1 ) &
 	else
 		# workers_ai — don't override MODEL; proxy defaults to workers_ai
 		( cd "$SCRIPT_DIR" && CI=true npx wrangler dev --ip "$PROXY_HOST" --port "$PROXY_PORT" \
-			--no-open < /dev/null > "$LOGFILE" 2>&1 ) &
+			< /dev/null > "$LOGFILE" 2>&1 ) &
 	fi
 	echo $! > "$PIDFILE"
 	echo "${model_var:-workers_ai}" > "$MODELFILE"
