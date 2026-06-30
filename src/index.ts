@@ -4,7 +4,7 @@ import type { Env, MessagesRequest } from './types';
 import { CORS_HEADERS, jsonResponse, jsonError, stringifySystem } from './types';
 import { loadSettings } from './config';
 import { ProxyError } from './error';
-import { PROVIDER_CATALOG } from './model-router';
+import { PROVIDER_CATALOG, type CatalogModel } from './model-router';
 import { ProxyService } from './proxy-service';
 import type { AnalyticsContext } from './analytics';
 import { logAnalytics, hashClientIp, estimateCostUsd, querySummary } from './analytics';
@@ -180,9 +180,37 @@ const PROVIDER_LABELS: Record<string, string> = {
 	google_ai:  'Google AI Studio',
 	openrouter: 'OpenRouter',
 	nvidia_nim: 'NVIDIA NIM',
+	ollama:     'Ollama (local)',
 };
 
-function handleModels(requestId: string, env: Env): Response {
+interface OllamaTagsModel {
+	name: string;
+}
+
+// Query Ollama's locally-pulled models so they show up in gateway model
+// discovery exactly like Gemini/OpenRouter/etc — lets Claude Code's own
+// /model picker (and "Welcome back" banner) display e.g. "gemma3:4b"
+// instead of falling back to the default Claude model name.
+async function fetchOllamaModels(env: Env): Promise<CatalogModel[]> {
+	if (env.ENABLE_OLLAMA_PROVIDER === 'false') return [];
+	const baseUrl = (env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434').replace(/\/+$/, '');
+	try {
+		const resp = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(3000) });
+		if (!resp.ok) return [];
+		const data = (await resp.json()) as { models?: OllamaTagsModel[] };
+		return (data.models ?? []).map((m) => ({
+			id: m.name,
+			display_name: m.name,
+			owned_by: 'ollama',
+		}));
+	} catch {
+		// Ollama unreachable (not running locally, or this Worker isn't colocated
+		// with it) — just omit Ollama models from discovery rather than erroring.
+		return [];
+	}
+}
+
+async function handleModels(requestId: string, env: Env): Promise<Response> {
 	const created = Math.floor(Date.now() / 1000);
 
 	// Build the model list from PROVIDER_CATALOG.
@@ -190,19 +218,21 @@ function handleModels(requestId: string, env: Env): Response {
 	// so cproxy can pass it verbatim as --model and the router handles it correctly.
 	// Models whose required key is missing are excluded so the picker only shows
 	// what will actually work (except Workers AI which never needs a key).
-	const data = PROVIDER_CATALOG
-		.filter(m => {
-			if (!m.requires_key) return true; // always available (Workers AI binding)
-			return !!(env as unknown as Record<string, string | undefined>)[m.requires_key];
-		})
-		.map(m => ({
-			id:           m.id,
-			object:       'model',
-			created,
-			owned_by:     m.owned_by,
-			display_name: m.display_name,
-			provider_label: PROVIDER_LABELS[m.owned_by] ?? m.owned_by,
-		}));
+	const catalogModels = PROVIDER_CATALOG.filter(m => {
+		if (!m.requires_key) return true; // always available (Workers AI binding)
+		return !!(env as unknown as Record<string, string | undefined>)[m.requires_key];
+	});
+
+	const ollamaModels = await fetchOllamaModels(env);
+
+	const data = [...catalogModels, ...ollamaModels].map(m => ({
+		id:           m.id,
+		object:       'model',
+		created,
+		owned_by:     m.owned_by,
+		display_name: m.display_name,
+		provider_label: PROVIDER_LABELS[m.owned_by] ?? m.owned_by,
+	}));
 
 	return jsonResponse({ object: 'list', data }, requestId);
 }
@@ -383,7 +413,7 @@ export default {
 			if (method === 'GET' && pathname === '/health') {
 				response = handleHealth(requestId);
 			} else if (method === 'GET' && pathname === '/v1/models') {
-				response = handleModels(requestId, env);
+				response = await handleModels(requestId, env);
 			} else if (method === 'POST' && pathname === '/v1/messages/count_tokens') {
 				response = await handleCountTokens(request, requestId);
 			} else if (method === 'POST' && pathname === '/v1/messages') {
@@ -507,6 +537,81 @@ export default {
 						headers: { 'Content-Type': 'application/json' },
 						body: JSON.stringify({ frame_type: frameType, ...body }),
 					}));
+				}
+
+			// ── Provider / Ollama API ─────────────────────────────────────────────
+			// GET  /providers                     — list providers + config
+			// GET  /providers/ollama/models       — list Ollama models from daemon
+			// POST /providers/sessions            — create Ollama chat session
+			// GET  /providers/sessions            — list Ollama sessions
+			// GET  /providers/sessions/:id        — get session with history
+			// POST /providers/sessions/:id/message — send message, get reply
+			// DELETE /providers/sessions/:id      — delete session
+			} else if (pathname === '/providers') {
+				const authErr = checkAuth(request, env);
+				if (authErr) {
+					response = authErr;
+				} else {
+					response = Response.json({
+						providers: [
+							{
+								id: 'ollama',
+								enabled: env.ENABLE_OLLAMA_PROVIDER !== 'false',
+								base_url: env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434',
+								default_model: env.OLLAMA_DEFAULT_MODEL ?? 'llama3.2',
+							},
+						],
+					});
+				}
+			} else if (pathname.startsWith('/providers/')) {
+				const authErr = checkAuth(request, env);
+				if (authErr) {
+					response = authErr;
+				} else if (!env.LAUNCHER_DO) {
+					response = jsonError(503, 'api_error', 'LAUNCHER_DO not configured', requestId);
+				} else {
+					// Forward a provider frame to the daemon via LauncherDO /provider-request.
+					// Passes Ollama config from Worker env so daemon doesn't need its own .dev.vars copy.
+					const providerRequest = async (frame: Record<string, unknown>): Promise<Response> => {
+						const id = env.LAUNCHER_DO!.idFromName('global');
+						const stub = env.LAUNCHER_DO!.get(id);
+						return stub.fetch(new Request(new URL('/provider-request', request.url), {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({
+								...frame,
+								ollama_base_url: env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434',
+								ollama_default_model: env.OLLAMA_DEFAULT_MODEL ?? 'llama3.2',
+							}),
+						}));
+					};
+
+					if (method === 'GET' && pathname === '/providers/ollama/models') {
+						response = await providerRequest({ frame_type: 'provider_list_models', provider: 'ollama' });
+
+					} else if (method === 'POST' && pathname === '/providers/sessions') {
+						const body = await request.json() as Record<string, unknown>;
+						response = await providerRequest({ frame_type: 'provider_create_session', provider: 'ollama', ...body });
+
+					} else if (method === 'GET' && pathname === '/providers/sessions') {
+						response = await providerRequest({ frame_type: 'provider_list_sessions', provider: 'ollama' });
+
+					} else if (method === 'GET' && /^\/providers\/sessions\/[^/]+$/.test(pathname)) {
+						const sid = pathname.split('/').pop()!;
+						response = await providerRequest({ frame_type: 'provider_get_session', provider: 'ollama', session_id: sid });
+
+					} else if (method === 'POST' && /^\/providers\/sessions\/[^/]+\/message$/.test(pathname)) {
+						const sid = pathname.split('/')[3];
+						const body = await request.json() as Record<string, unknown>;
+						response = await providerRequest({ frame_type: 'provider_send_message', provider: 'ollama', session_id: sid, ...body });
+
+					} else if (method === 'DELETE' && /^\/providers\/sessions\/[^/]+$/.test(pathname)) {
+						const sid = pathname.split('/').pop()!;
+						response = await providerRequest({ frame_type: 'provider_delete_session', provider: 'ollama', session_id: sid });
+
+					} else {
+						response = jsonError(404, 'not_found', `Unknown provider route: ${method} ${pathname}`, requestId);
+					}
 				}
 
 			} else {

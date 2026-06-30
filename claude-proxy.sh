@@ -821,13 +821,7 @@ PYEOF
 
 		echo ""
 		echo "  Backend: Ollama (local)"
-		echo "  Model:   ${MODEL_VAR#ollama/}"
-		echo ""
-		echo "  ╔═══════════════════════════════════════════════════════════════╗"
-		echo "  ║  Claude Code UI still shows 'Opus 4.7' / 'Sonnet 4.6'.      ║"
-		echo "  ║  Every request is intercepted and routed to Ollama instead.  ║"
-		echo "  ║  No data leaves your machine — fully local inference.        ║"
-		echo "  ╚═══════════════════════════════════════════════════════════════╝"
+		echo "  Model:   ${_OLLAMA_MODEL_NAME}"
 		echo ""
 		echo "  Opening Claude Code in: $LAUNCH_DIR"
 		echo ""
@@ -835,6 +829,13 @@ PYEOF
 		cd "$LAUNCH_DIR"
 		if user_settings_conflict_with_gateway && ! has_setting_sources_arg "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"; then
 			CLAUDE_ARGS=(--setting-sources project,local "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}")
+		fi
+		# Pass --model so Claude Code's own UI shows the real Ollama tag
+		# (e.g. "gemma4:latest") instead of "Opus"/"Sonnet". Safe to do
+		# unconditionally here — ModelRouter routes bare Ollama tags directly
+		# when this session's backend is itself Ollama (see model-router.ts).
+		if ! has_arg "--model" "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"; then
+			CLAUDE_ARGS=("--model" "$_OLLAMA_MODEL_NAME" "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}")
 		fi
 		env \
 			-u CLAUDE_CODE_USE_VERTEX \
@@ -1084,6 +1085,14 @@ for m in data.get('data', []):
 		echo "  This prevents Claude Code from bypassing $PROXY_URL and retrying against Vertex/Bedrock."
 		echo ""
 		CLAUDE_ARGS=(--setting-sources project,local "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}")
+	fi
+
+	# For Ollama, pass --model so Claude Code's own UI shows the real tag
+	# (e.g. "gemma4:latest") instead of "Opus"/"Sonnet". Safe to do
+	# unconditionally — ModelRouter routes bare Ollama tags directly when
+	# this session's backend is itself Ollama (see model-router.ts).
+	if [[ "$PROVIDER" == "ollama" ]] && ! has_arg "--model" "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}"; then
+		CLAUDE_ARGS=("--model" "${MODEL_VAR#ollama/}" "${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}")
 	fi
 
 	# -u ANTHROPIC_API_KEY: avoid the "both ANTHROPIC_AUTH_TOKEN and

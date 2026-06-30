@@ -122,6 +122,21 @@ export class ModelRouter {
 			};
 		}
 
+		// ── 1b. Ollama bare model name (e.g. "gemma4:latest" from gateway model
+		// discovery / Claude Code's own /model picker) — only meaningful when this
+		// session's configured backend is itself Ollama (MODEL=ollama/<name>).
+		// Routes the exact requested tag through, so picking a different locally-
+		// pulled model inside Claude Code actually switches which one is used.
+		// Excludes "claude*" names so Claude Code's own default model id (sent
+		// before any /model selection) still falls through to tier routing below.
+		if (
+			!requestedModel.includes('/') &&
+			!requestedModel.toLowerCase().startsWith('claude') &&
+			this.settings.model.startsWith('ollama/')
+		) {
+			return { originalModel: requestedModel, providerId: 'ollama', providerModel: requestedModel };
+		}
+
 		// ── 2. Tier routing via MODEL / MODEL_OPUS / MODEL_SONNET / MODEL_HAIKU ─
 		const target = resolveModelTarget(this.settings, requestedModel);
 
